@@ -1,0 +1,15 @@
+# steamcmd-pulled / seeded pristine base (20 GB, not source)
+base/
+
+# per-instance state (fresh game copies + Proton prefixes)
+instances/
+
+# steamcmd binary + config
+tools/steamcmd/
+
+# logs and transient output
+*.log
+output_log_live.txt
+
+# docker-gui shader cache overlay
+.scratch/

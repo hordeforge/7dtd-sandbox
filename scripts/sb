@@ -1,0 +1,833 @@
+#!/usr/bin/env bash
+# 7dtd-safehouse — isolated client and/or dedicated-server instances
+#
+# Three launch modes:
+#   sb run client   <name> [-- game args]   - client only (Proton, no Steam)
+#   sb run server   <name>                  - dedicated server only (native, app 294420)
+#   sb run both     <name> [-- game args]   - both; client auto-connects to the server
+#
+# Underlying commands (still available):
+#   create / create-server / launch / launch-server / stop / wipe / destroy /
+#   list / status / logs / env / fetch-base / fetch-server-base / doctor / init
+#
+# Run `sb help` for the full list.
+set -euo pipefail
+
+SANDBOX_HOME="${SANDBOX_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+INSTANCES_DIR="${SANDBOX_INSTANCES:-$SANDBOX_HOME/instances}"
+BASE_GAME="${SANDBOX_BASE_GAME:-$SANDBOX_HOME/base/game}"
+SERVER_BASE_GAME="${SANDBOX_SERVER_BASE_GAME:-$SANDBOX_HOME/base/server-game}"
+STEAMCMD_DIR="${SANDBOX_STEAMCMD:-$SANDBOX_HOME/tools/steamcmd}"
+STEAM_APPID="${STEAM_APPID:-251570}"
+SERVER_APPID="${SERVER_APPID:-294420}"
+STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
+
+die() { echo "sb: $*" >&2; exit 1; }
+warn() { echo "sb: WARN: $*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Usage: sb <command> [args]
+
+Standardized, isolated 7DTD client AND dedicated-server instances
+(no Steam, no EOS, no Twitch).
+
+Quick launch (three modes):
+  run client <name> [-- args...]  client-only: Proton, no Steam (blocking)
+  run server <name>               dedicated server only (blocking)
+  run both   <name> [-- args...]  server + client; client auto-joins server
+
+Underlying commands (full control):
+  fetch-base [--validate | --seed-from-steam]
+                       steamcmd-pull the pristine client (Windows depot forced)
+  fetch-server-base [--validate]
+                       steamcmd-pull the dedicated server (anonymous OK)
+  create <name>        fresh isolated client instance (game copy + Proton prefix)
+  create-server <name> fresh isolated server instance (game copy + unique ports)
+  launch <name> [-- args...]    run client under Proton, no Steam
+  launch-server <name>          run dedicated server, blocking
+  wipe <name> [name...] reset game/Mods/saves to pristine
+  destroy <name> [name...]      remove instance entirely
+  stop <name> [name...]         TERM/KILL only this instance's processes
+  list                  list instances with running state
+  status <name>         show one instance's state and paths
+  logs <name> [-f]      tail the instance's log
+  env <name>            eval-able contract for sibling harnesses
+  doctor                report readiness
+  help                  this text
+
+Standard env: SANDBOX_HOME, SANDBOX_INSTANCES, SANDBOX_BASE_GAME,
+SANDBOX_SERVER_BASE_GAME, SANDBOX_STEAMCMD, STEAM_APPID, SERVER_APPID,
+STEAM_ROOT, PROTON, GFX_API, SB_RES (default 1280x720),
+SB_FULLSCREEN (default 0=windowed), STEAMCMD_USER, STEAMCMD_PASS,
+7DTD_PLAYER_NAME.
+EOF
+}
+
+# --- detection -------------------------------------------------------------
+
+detect_proton() {
+  if [[ -n "${PROTON:-}" ]]; then
+    [[ -x "$PROTON" ]] || die "PROTON set but not executable: $PROTON"
+    echo "$PROTON"
+    return 0
+  fi
+  local p
+  for p in \
+    "$STEAM_ROOT/steamapps/common/Proton - Experimental/proton" \
+    "$STEAM_ROOT/steamapps/common/Proton 11.0/proton" \
+    "$STEAM_ROOT/steamapps/common/Proton 10.0/proton" \
+    "$HOME/.steam/steam/steamapps/common/Proton - Experimental/proton"
+  do
+    if [[ -x "$p" ]]; then echo "$p"; return 0; fi
+  done
+  die "no Proton found; set PROTON=/path/to/proton"
+}
+
+# --- instance plumbing -----------------------------------------------------
+
+validate_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid instance name '$1' (use [A-Za-z0-9._-], not starting with '-')"
+}
+
+# Steam only ever validates files it owns (inside a steamapps library). The
+# sandbox's whole isolation story is that Steam neither owns nor touches base/
+# or instances/, so a directory under any steamapps tree is refused here.
+assert_not_steam_owned() {
+  local path="$1" what="$2"
+  local resolved
+  resolved="$(cd "$(dirname "$path")" 2>/dev/null && pwd)" || resolved="$path"
+  case "$resolved" in
+    */steamapps/*)
+      die "$what must not live inside a Steam library ($resolved); Steam would own and verify these files"
+      ;;
+  esac
+}
+
+instance_dir() {
+  validate_name "$1"
+  local inst="$INSTANCES_DIR/$1"
+  [[ -d "$inst" ]] || die "instance '$1' not found (create it with 'sb create $1' or 'sb create-server $1')"
+  echo "$inst"
+}
+
+copy_tree() {
+  local src="$1" dst="$2" what="$3"
+  # dst is always a fresh copy of src: any previous content (e.g. an empty
+  # dir left by a failed fetch) is replaced. dst is a sandbox-owned path.
+  rm -rf "$dst"
+  if cp -a --reflink=always "$src" "$dst" 2>/dev/null; then
+    return 0
+  fi
+  if cp -a --reflink=auto "$src" "$dst" 2>/dev/null; then
+    warn "reflink unavailable, plain-copied $what (slower)"
+    return 0
+  fi
+  die "could not copy $what from $src to $dst"
+}
+
+write_local_platform() {
+  cat > "$1" <<'EOF'
+platform=Local
+crossplatform=None
+serverplatforms=Steam,LAN,Local,
+EOF
+}
+
+ensure_local_platform() {
+  local cfg="$1/platform.cfg"
+  if [[ -f "$cfg" ]] && grep -q '^platform=Local' "$cfg"; then
+    return 0
+  fi
+  write_local_platform "$cfg"
+  echo "instance platform.cfg set to Local (no Steam auth, no EOS)"
+}
+
+# Host-visible logs: the game writes C:/users/steamuser/AppData/Roaming/7DaysToDie/logs
+# inside the prefix; replace that dir with a symlink to $inst/logs so harnesses
+# read host paths. Re-run at every launch (idempotent).
+link_prefix_logs() {
+  local inst="$1"
+  local pfxlog="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie/logs"
+  if [[ -d "$inst/compatdata/pfx" ]]; then
+    mkdir -p "$(dirname "$pfxlog")"
+    rm -rf "$pfxlog"
+    ln -s "$inst/logs" "$pfxlog"
+  fi
+}
+
+# Pids of processes bound to this instance: clients carry their unique
+# STEAM_COMPAT_DATA_PATH; server instances carry SB_INSTANCE (set at launch).
+# Never matches the steam client or other instances.
+instance_pids() {
+  local compat="$1" marker="${3:-STEAM_COMPAT_DATA_PATH}" pid
+  local value="${2:-$compat}"
+  for ef in /proc/[0-9]*/environ; do
+    [[ -r "$ef" ]] || continue
+    pid="${ef#/proc/}"; pid="${pid%/environ}"
+    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+    if { tr '\0' '\n' < "$ef"; } 2>/dev/null | grep -Fqx "$marker=$value"; then
+      echo "$pid"
+    fi
+  done
+}
+
+# Instance kind: 'server' for server instances, 'client' otherwise.
+instance_kind() {
+  local inst="$1"
+  if [[ -f "$inst/instance.env" ]] && grep -q '^SERVER_KIND=server' "$inst/instance.env"; then
+    echo server
+  else
+    echo client
+  fi
+}
+
+# Running pids for an instance of either kind.
+instance_procs() {
+  local inst="$1" kind
+  kind="$(instance_kind "$inst")"
+  if [[ "$kind" == server ]]; then
+    instance_pids "$inst" "$inst" SB_INSTANCE
+  else
+    instance_pids "$inst/compatdata"
+  fi
+}
+
+# --- client commands -------------------------------------------------------
+
+require_base() {
+  [[ -d "$BASE_GAME" ]] || die "base game missing at $BASE_GAME (run 'sb fetch-base' first)"
+  [[ -f "$BASE_GAME/7DaysToDie.exe" ]] || die "base game incomplete: no 7DaysToDie.exe in $BASE_GAME"
+}
+
+# Per-instance online-service opt-outs, written into the instance's own prefix
+# registry so no instance ever phones home by default.
+seed_offline_prefs() {
+  local inst="$1"
+  [[ -d "$inst/compatdata/pfx" ]] || return 0
+  local proton
+  proton="$(detect_proton)"
+  local prefs="HKCU\\Software\\The Fun Pimps\\7 Days To Die"
+  ( cd "$inst/game" \
+    && env STEAM_COMPAT_DATA_PATH="$inst/compatdata" \
+           STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+           "$proton" run reg.exe add "$prefs" /v "DiscordDisabled_h2080590481" /t REG_DWORD /d 1 /f >/dev/null 2>&1 ) \
+    && echo "offline prefs seeded: Discord disabled" \
+    || warn "could not seed Discord-off pref (online services stay at game defaults)"
+}
+
+cmd_fetch() {
+  # Steam verification off by default: -validate makes steamcmd hash-check
+  # every file against the depot. The whole point of the sandbox is Steam
+  # never owns these files; pass --validate to opt in.
+  local validate=()
+  case "${1:-}" in
+    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" ;;
+    --seed-from-steam) cmd_seed_from_steam; return 0 ;;
+    "") ;;
+    *) die "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
+  esac
+  assert_not_steam_owned "$BASE_GAME" "base game"
+  mkdir -p "$BASE_GAME"
+  local login=(+login anonymous)
+  if [[ -n "${STEAMCMD_USER:-}" ]]; then
+    login=(+login "$STEAMCMD_USER" "${STEAMCMD_PASS:-}")
+    if [[ -z "${STEAMCMD_PASS:-}" ]]; then
+      echo "sb: STEAMCMD_PASS unset; steamcmd will prompt for the password (run in a terminal)." >&2
+    fi
+  else
+    echo "sb: anonymous login; the 7DTD client (251570) needs a subscription, so this will" >&2
+    echo "    fail with 'No subscription' unless the app is free. For a real account set" >&2
+    echo "    STEAMCMD_USER and STEAMCMD_PASS, or run 'sb fetch-base' in a terminal and" >&2
+    echo "    type the password when prompted." >&2
+  fi
+  if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +@sSteamCmdForcePlatformType windows \
+      +force_install_dir "$BASE_GAME" "${login[@]}" \
+      +app_update "$STEAM_APPID" "${validate[@]}" +quit ); then
+    echo "sb: steamcmd exited nonzero (see its output above); for the paid client (251570) an" >&2
+    echo "    anonymous login cannot work - set STEAMCMD_USER/STEAMCMD_PASS and retry." >&2
+    exit 1
+  fi
+}
+
+cmd_seed_from_steam() {
+  local src="${STEAM_SEED_SOURCE:-$HOME/.local/share/Steam/steamapps/common/7 Days To Die}"
+  [[ -f "$src/7DaysToDie.exe" ]] || die "seed source is not a 7DTD install: $src"
+  assert_not_steam_owned "$BASE_GAME" "base game"
+  if [[ -d "$BASE_GAME" && -f "$BASE_GAME/7DaysToDie.exe" ]]; then
+    echo "sb: base already present at $BASE_GAME; delete it first to re-seed"
+    return 1
+  fi
+  mkdir -p "$(dirname "$BASE_GAME")"
+  echo "seeding base from $src (reflink snapshot; bootstrap only)"
+  copy_tree "$src" "$BASE_GAME" "seed base"
+  echo "seeded $(date -u +%Y-%m-%dT%H:%M:%SZ) from $src" > "$BASE_GAME/.seed-from-steam"
+}
+
+# --- server commands -------------------------------------------------------
+
+cmd_fetch_server_base() {
+  local validate=()
+  if [[ "${1:-}" == "--validate" ]]; then
+    validate=(-validate)
+    echo "sb: steam data-file validation enabled (--validate)"
+  fi
+  assert_not_steam_owned "$SERVER_BASE_GAME" "server base game"
+  mkdir -p "$SERVER_BASE_GAME"
+  if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +force_install_dir "$SERVER_BASE_GAME" \
+      +login anonymous +app_update "$SERVER_APPID" "${validate[@]}" +quit ); then
+    echo "sb: steamcmd exited nonzero (see its output above)" >&2
+    exit 1
+  fi
+}
+
+# Allocate a contiguous 5-port block for a server instance: ServerPort (game,
+# UDP+TCP), +1 telnet, +2..+4 spare (the dedicated opens a few ephemeral
+# ports around ServerPort; loadgen bots also join on ServerPort+2). Blocks
+# are unique per instance (no overlap) and recorded in instance.env.
+alloc_server_ports() {
+  local base=27100 p sfile used
+  while :; do
+    used=0
+    for sfile in "$INSTANCES_DIR"/*/instance.env; do
+      [[ -r "$sfile" ]] || continue
+      p="$(sed -n 's/^SERVER_PORT=//p' "$sfile" | head -1)"
+      [[ -z "${p:-}" ]] && continue
+      if (( p + 5 > base && p < base + 5 )); then used=1; break; fi
+    done
+    (( used )) || break
+    base=$(( base + 5 ))
+  done
+  echo "$base"
+}
+
+cmd_create_server() {
+  local name="$1"
+  validate_name "$name"
+  [[ -d "$SERVER_BASE_GAME" && -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] \
+    || die "server base missing at $SERVER_BASE_GAME (run 'sb fetch-server-base' first)"
+  assert_not_steam_owned "$INSTANCES_DIR" "instances"
+  local inst="$INSTANCES_DIR/$name"
+  [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
+  local port
+  port="$(alloc_server_ports)"
+  mkdir -p "$inst"
+  echo "copying server base into instance (reflink/COW)..."
+  copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
+  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  cat > "$inst/game/platform.cfg" <<'EOF'
+platform=Steam
+crossplatform=None
+serverplatforms=Steam,LAN,Local,
+EOF
+  cat > "$inst/instance.env" <<EOF
+# 7dtd-client-sandbox server instance contract (source or eval this file).
+# Written by 'sb create-server'; consumed by 'sb launch-server' and siblings.
+SANDBOX_NAME=$name
+INSTANCE_DIR=$inst
+SERVER_GAME=$inst/game
+SERVER_USERDATA=$inst/userdata
+SERVER_PORT=$port
+SERVER_TELNET_PORT=$(( port + 1 ))
+SERVER_CONFIG=$inst/serverconfig.xml
+SERVER_LOG=$inst/logs/server.log
+SERVER_KIND=server
+EOF
+  echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
+}
+
+cmd_launch_server() {
+  local name="$1"; shift || true
+  local inst
+  inst="$(instance_dir "$name")"
+  [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
+  grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
+  local game="$inst/game"
+  local port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env")"
+  local telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env")"
+  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
+  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  local cfg="$inst/serverconfig.xml"
+  local tmpl="$game/serverconfig.xml"
+  [[ -f "$cfg" ]] || cp "$tmpl" "$cfg"
+  set_server_config_value "$cfg" ServerPort "$port"
+  set_server_config_value "$cfg" TelnetPort "$telnet_port"
+  set_server_config_value "$cfg" ServerName "sandbox-$name"
+  set_server_config_value "$cfg" EACEnabled "false"
+  set_server_config_value "$cfg" UserDataFolder "$inst/userdata"
+  echo "sandbox:   $name (server)"
+  echo "game:      $game"
+  echo "port:      $port (telnet $telnet_port)"
+  echo "userdata:  $inst/userdata"
+  echo "log:       $inst/logs/server.log"
+  cd "$game"
+  exec env SB_INSTANCE="$inst" ./7DaysToDieServer.x86_64 -configfile="$cfg" -logfile "$inst/logs/server.log" \
+    -dedicated -nographics -batchmode "$@"
+}
+
+# Set (or append) a <property name="..." value="..."/> in a serverconfig.xml.
+# The stock template pads properties with tabs and trailing comments, so match
+# the property by name anywhere on the line and replace only its value.
+set_server_config_value() {
+  local cfg="$1" key="$2" val="$3"
+  python3 - "$cfg" "$key" "$val" <<'PYEOF'
+import re, sys
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path, encoding="utf-8", errors="replace").read()
+pat = re.compile(r'(<property\s+name="%s"\s+value=")([^"]*)(")' % re.escape(key))
+def active(m):
+    start = m.start()
+    op = text.rfind("<!--", 0, start)
+    cl = text.rfind("-->", 0, start)
+    return None if op != -1 and op > cl else m
+new, _ = pat.subn(lambda m: m.group(1) + val + m.group(3), text)
+def _count_active(s):
+    total = 0
+    for m in pat.finditer(s):
+        op = s.rfind("<!--", 0, m.start())
+        cl = s.rfind("-->", 0, m.start())
+        if not (op != -1 and op > cl):
+            total += 1
+    return total
+if _count_active(new) == 0:
+    new = pat.sub("", text) if pat.search(text) and text == new else new
+    closer = "</ServerSettings>"
+    insert = '  <property name="%s" value="%s"/>\n' + closer
+    new = new.replace(closer, insert % (key, val), 1)
+open(path, "w", encoding="utf-8").write(new)
+PYEOF
+}
+
+# --- commands --------------------------------------------------------------
+
+cmd_init() {
+  mkdir -p "$INSTANCES_DIR" "$SANDBOX_HOME/base"
+  PROTON="$(detect_proton)"
+  echo "SANDBOX_HOME=$SANDBOX_HOME"
+  echo "INSTANCES_DIR=$INSTANCES_DIR"
+  echo "BASE_GAME=$BASE_GAME"
+  echo "PROTON=$PROTON"
+  echo "STEAM_ROOT=$STEAM_ROOT"
+  echo "steamcmd: $([ -x "$STEAMCMD_DIR/steamcmd.sh" ] && echo ok || echo missing)"
+}
+
+cmd_doctor() {
+  cmd_init
+  echo "--- client base ---"
+  if [[ -d "$BASE_GAME" && -f "$BASE_GAME/7DaysToDie.exe" ]]; then
+    du -sh "$BASE_GAME" 2>/dev/null || true
+  else
+    echo "client base missing; run 'sb fetch-base'"
+  fi
+  echo "--- server base ---"
+  if [[ -d "$SERVER_BASE_GAME" && -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]]; then
+    du -sh "$SERVER_BASE_GAME" 2>/dev/null || true
+  else
+    echo "server base missing; run 'sb fetch-server-base'"
+  fi
+  echo "--- reflink ---"
+  local probe="$SANDBOX_HOME/base/.reflink_probe"
+  if cp --reflink=always "$BASE_GAME/7DaysToDie.exe" "$probe" 2>/dev/null; then
+    echo "btrfs reflink available (cheap COW copies)"; rm -f "$probe"
+  else
+    echo "reflink unavailable (instances will be plain copies)"
+  fi
+  echo "--- platform.cfg in client base ---"
+  [[ -f "$BASE_GAME/platform.cfg" ]] && cat "$BASE_GAME/platform.cfg"
+  echo "--- steam ownership guard ---"
+  assert_not_steam_owned "$BASE_GAME" "client base" && echo "client base: not Steam-owned (Steam will never verify it)"
+  assert_not_steam_owned "$SERVER_BASE_GAME" "server base" && echo "server base: not Steam-owned (Steam will never verify it)"
+  assert_not_steam_owned "$INSTANCES_DIR" "instances" && echo "instances: not Steam-owned (Steam will never verify them)"
+}
+
+cmd_create() {
+  local name="$1"
+  validate_name "$name"
+  require_base
+  assert_not_steam_owned "$INSTANCES_DIR" "instances"
+  assert_not_steam_owned "$BASE_GAME" "base game"
+  local inst="$INSTANCES_DIR/$name"
+  [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
+  PROTON="$(detect_proton)"
+  mkdir -p "$inst"
+  echo "copying base game into instance (reflink/COW)..."
+  copy_tree "$BASE_GAME" "$inst/game" "base game"
+  write_local_platform "$inst/game/platform.cfg"
+  mkdir -p "$inst/compatdata" "$inst/logs"
+  cat > "$inst/instance.env" <<EOF
+# 7dtd-client-sandbox instance contract (source or eval this file).
+# Written by 'sb create'; consumed by 'sb launch' and sibling harnesses.
+SANDBOX_NAME=$name
+INSTANCE_DIR=$inst
+GAME=$inst/game
+COMPAT=$inst/compatdata
+PROTON=$PROTON
+STEAM_ROOT=$STEAM_ROOT
+STEAM_APPID=$STEAM_APPID
+LOGFILE=$inst/logs/output_log_client.txt
+EOF
+  echo "initializing Proton prefix (first run; one-time cost)..."
+  if ( cd "$inst/game" \
+       && env STEAM_COMPAT_DATA_PATH="$inst/compatdata" \
+              STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+              "$PROTON" run wineboot.exe -u >/dev/null 2>&1 ); then
+    echo "prefix initialized"
+  else
+    warn "wineboot init failed; the prefix will be created on first 'sb launch'"
+  fi
+  seed_offline_prefs "$inst"
+  link_prefix_logs "$inst"
+  echo "created instance '$name' at $inst"
+}
+
+cmd_destroy() {
+  local name="$1" inst
+  inst="$(instance_dir "$name")"
+  local pids
+  pids="$(instance_procs "$inst")"
+  if [[ -n "$pids" ]]; then
+    echo "sb: instance '$name' is running (pids: $(echo "$pids" | tr '\n' ' ')); stopping it first"
+    kill -TERM $pids 2>/dev/null || true
+    sleep 2
+    kill -KILL $pids 2>/dev/null || true
+  fi
+  rm -rf "$inst"
+  echo "destroyed instance '$name'"
+}
+
+cmd_wipe() {
+  local name="$1" inst kind
+  inst="$(instance_dir "$name")"
+  kind="$(instance_kind "$inst")"
+  local pids
+  pids="$(instance_procs "$inst")"
+  if [[ -n "$pids" ]]; then
+    die "instance '$name' is running (pids: $(echo "$pids" | tr '\n' ' ')); stop it first ('sb stop $name')"
+  fi
+  if [[ "$kind" == server ]]; then
+    [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
+    rm -rf "$inst/game"
+    copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
+    cat > "$inst/game/platform.cfg" <<'EOF'
+platform=Steam
+crossplatform=None
+serverplatforms=Steam,LAN,Local,
+EOF
+    rm -rf "$inst/userdata"
+    mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs"
+    rm -f "$inst/serverconfig.xml"
+    echo "wiped server instance '$name': game, Mods and userdata reset to pristine base"
+    return 0
+  fi
+  require_base
+  rm -rf "$inst/game"
+  copy_tree "$BASE_GAME" "$inst/game" "base game"
+  write_local_platform "$inst/game/platform.cfg"
+  seed_offline_prefs "$inst"
+  local roam="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie"
+  rm -rf "$roam/Saves" "$roam/SavesLocal" "$roam/GeneratedWorlds" 2>/dev/null || true
+  echo "wiped instance '$name': game, Mods and saves reset to pristine base"
+}
+
+instance_running() {
+  local inst="$1"
+  local pids
+  pids="$(instance_procs "$inst")"
+  [[ -n "$pids" ]] && echo "yes ($(echo "$pids" | wc -w) procs)" || echo "no"
+}
+
+cmd_list() {
+  [[ -d "$INSTANCES_DIR" ]] || { echo "(no instances; run 'sb create <name>')"; return 0; }
+  local d name running kind
+  for d in "$INSTANCES_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    d="${d%/}"
+    name="$(basename "$d")"
+    kind="$(instance_kind "$d")"
+    running="$(instance_running "$d")"
+    printf '%-20s %-8s %-16s %s\n' "$name" "$kind" "$running" "$d"
+  done
+}
+
+cmd_status() {
+  local name="$1" inst kind
+  inst="$(instance_dir "$name")"
+  kind="$(instance_kind "$inst")"
+  echo "instance:   $name ($kind)"
+  echo "dir:        $inst"
+  echo "running:    $(instance_running "$inst")"
+  echo "game:       $inst/game  ($(du -sh "$inst/game" 2>/dev/null | cut -f1))"
+  if [[ "$kind" == server ]]; then
+    echo "userdata:   $inst/userdata"
+    echo "log:        $inst/logs/server.log"
+    echo "mods:       $inst/game/Mods"
+  else
+    echo "compatdata: $inst/compatdata"
+    echo "log:        $inst/logs/output_log_client.txt"
+    echo "mods:       $inst/game/Mods"
+  fi
+  echo "--- instance.env ---"
+  cat "$inst/instance.env" 2>/dev/null || true
+}
+
+cmd_env() {
+  local name="$1" inst kind
+  inst="$(instance_dir "$name")"
+  kind="$(instance_kind "$inst")"
+  if [[ "$kind" == server ]]; then
+    grep -v '^#' "$inst/instance.env" | grep -v '^$' || true
+    return 0
+  fi
+  PROTON="$(detect_proton)"
+  cat <<EOF
+export SANDBOX_NAME='$name'
+export INSTANCE_DIR='$inst'
+export GAME='$inst/game'
+export COMPAT='$inst/compatdata'
+export PROTON='$PROTON'
+export STEAM_ROOT='$STEAM_ROOT'
+export STEAM_APPID='$STEAM_APPID'
+export LOGFILE='$inst/logs/output_log_client.txt'
+EOF
+}
+
+cmd_launch() {
+  local name="$1"; shift || true
+  local inst
+  inst="$(instance_dir "$name")"
+  if [[ "$(instance_kind "$inst")" == server ]]; then
+    die "'$name' is a server instance; use 'sb launch-server $name'"
+  fi
+  local game="$inst/game" compat="$inst/compatdata"
+  [[ -d "$game" ]] || die "instance '$name' game missing at $game (recreate or wipe)"
+  PROTON="$(detect_proton)"
+  ensure_local_platform "$game"
+  mkdir -p "$inst/logs"
+  link_prefix_logs "$inst"
+  export STEAM_COMPAT_DATA_PATH="$compat"
+  export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"
+  export SteamAppId="$STEAM_APPID"
+  export SteamGameId="$STEAM_APPID"
+  local player
+  player="$(printenv 7DTD_PLAYER_NAME 2>/dev/null || true)"
+  [[ -n "$player" ]] || player="$name"
+  local gfx_api="${GFX_API:-d3d11}"
+  local gfx
+  case "$gfx_api" in
+    d3d11|d3d12|vulkan|glcore) gfx=(-force-"$gfx_api") ;;
+    none) gfx=() ;;
+    *) die "GFX_API must be d3d11, d3d12, vulkan, glcore or none (got '$gfx_api')" ;;
+  esac
+  local screen_args=()
+  if ! printf '%s\0' "$@" | grep -qz -- '-screen-'; then
+    local res="${SB_RES:-1280x720}"
+    [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
+    local fullscreen="${SB_FULLSCREEN:-0}"
+    case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
+    screen_args=(-screen-fullscreen "$fullscreen" \
+                 -screen-width "${res%%x*}" -screen-height "${res##*x}")
+  fi
+  local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_sandbox.txt"
+  echo "sandbox:   $name"
+  echo "proton:    $PROTON"
+  echo "game:      $game"
+  echo "compat:    $compat"
+  echo "log:       $inst/logs/output_log_client.txt"
+  echo "player:    $player"
+  echo "window:    ${screen_args[*]:-<as passed>}"
+  cd "$game"
+  exec env 7DTD_PLAYER_NAME="$player" "$PROTON" run ./7DaysToDie.exe "${gfx[@]}" -nogs -noeac -skipintro -SkipNewsScreen=true \
+    -logfile "$win_log" "${screen_args[@]}" "$@"
+}
+
+cmd_stop() {
+  local name="$1" inst
+  inst="$(instance_dir "$name")"
+  local pids
+  pids="$(instance_procs "$inst")"
+  if [[ -z "$pids" ]]; then
+    echo "sb: instance '$name' is not running"
+    return 0
+  fi
+  echo "stopping instance '$name' (pids: $(echo "$pids" | tr '\n' ' '))"
+  kill -TERM $pids 2>/dev/null || true
+  sleep 3
+  pids="$(instance_procs "$inst")"
+  if [[ -n "$pids" ]]; then
+    echo "still alive, sending KILL: $(echo "$pids" | tr '\n' ' ')"
+    kill -KILL $pids 2>/dev/null || true
+  fi
+  echo "stopped"
+}
+
+cmd_logs() {
+  local name="$1" inst kind
+  inst="$(instance_dir "$name")"
+  kind="$(instance_kind "$inst")"
+  local logfile
+  if [[ "$kind" == server ]]; then
+    logfile="$inst/logs/server.log"
+  else
+    logfile="$inst/logs/output_log_client.txt"
+  fi
+  [[ -f "$logfile" ]] || die "no log yet at $logfile"
+  if [[ "${2:-}" == "-f" ]]; then
+    tail -f "$logfile"
+  else
+    tail -n 40 "$logfile"
+  fi
+}
+
+# --- run: three-mode dispatcher -------------------------------------------
+
+# Copy the sibling 7dtd-fastconnect client mod into a client instance so
+# `sb run both` can auto-join (the stock client ignores -connect=). No-op
+# (with a note) when the sibling repo or its dist/ is absent.
+stage_fastconnect() {
+  local inst="$1"
+  local src="${FASTCONNECT_DIST:-$SANDBOX_HOME/../7dtd-fastconnect/dist/7dtd-fastconnect}"
+  if [[ -f "$src/7dtd-fastconnect.dll" && -f "$src/ModInfo.xml" ]]; then
+    mkdir -p "$inst/game/Mods/7dtd-fastconnect"
+    cp -f "$src/7dtd-fastconnect.dll" "$src/ModInfo.xml" "$inst/game/Mods/7dtd-fastconnect/"
+    echo "staged 7dtd-fastconnect into $inst/game/Mods (auto-join)"
+  else
+    warn "7dtd-fastconnect dist not found at $src; client will sit at the menu (no auto-join)"
+  fi
+}
+
+# Block until a TCP port accepts connections, or die after a timeout. The
+# server logs "Telnet on <port>" and starts listening on <port>+0 well
+# before the world is fully generated; clients that auto-join usually finish
+# loading by then too.
+wait_for_port() {
+  local host="$1" port="$2" timeout="${3:-90}"
+  local end=$(( $(date +%s) + timeout ))
+  while (( $(date +%s) < end )); do
+    if (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null; then
+      exec 3>&- 3<&-
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+cmd_run() {
+  local mode="$1" name="$2"; shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  validate_name "$name"
+  case "$mode" in
+    client)
+      [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create "$name" >/dev/null
+      exec cmd_launch "$name" "$@"
+      ;;
+    server)
+      [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create_server "$name" >/dev/null
+      exec cmd_launch_server "$name" "$@"
+      ;;
+    both)
+      # Server first; client joins once the port is up. The stock client
+      # ignores -connect=, so auto-join rides the sibling 7dtd-fastconnect
+      # mod (reads 7DTD_CONNECT at menu, issues the console connect). Without
+      # the sibling repo the client still launches and sits at the menu.
+      local srv_name="srv-$name" cli_name="client-$name"
+      local create_cli=1
+      if [[ ! -d "$INSTANCES_DIR/$cli_name" ]]; then
+        cmd_create "$cli_name" >/dev/null
+      fi
+      stage_fastconnect "$INSTANCES_DIR/$cli_name"
+      [[ -d "$INSTANCES_DIR/$srv_name" ]] || cmd_create_server "$srv_name" >/dev/null
+
+      local srv_inst="$INSTANCES_DIR/$srv_name"
+      local srv_port
+      srv_port="$(sed -n 's/^SERVER_PORT=//p' "$srv_inst/instance.env" | head -1)"
+      [[ -n "$srv_port" ]] || die "no SERVER_PORT in $srv_inst/instance.env"
+
+      echo "starting server '$srv_name' (port $srv_port) in background..."
+      # Rewrite the serverconfig (EAC off, UserDataFolder set, ports locked),
+      # then exec detached so we can launch the client next.
+      local cfg="$srv_inst/serverconfig.xml"
+      [[ -f "$cfg" ]] || cp "$srv_inst/game/serverconfig.xml" "$cfg"
+      set_server_config_value "$cfg" ServerPort "$srv_port"
+      set_server_config_value "$cfg" TelnetPort "$(( srv_port + 1 ))"
+      set_server_config_value "$cfg" ServerName "sandbox-$name"
+      set_server_config_value "$cfg" EACEnabled "false"
+      set_server_config_value "$cfg" UserDataFolder "$srv_inst/userdata"
+
+      ( cd "$srv_inst/game" \
+        && setsid env SB_INSTANCE="$srv_inst" \
+             ./7DaysToDieServer.x86_64 \
+               -configfile="$cfg" -logfile "$srv_inst/logs/server.log" \
+               -dedicated -nographics -batchmode \
+            </dev/null >"$srv_inst/logs/server.stdout.log" 2>&1 & )
+      sleep 1
+
+      echo "waiting for server port $srv_port ..."
+      if ! wait_for_port 127.0.0.1 "$srv_port" 90; then
+        die "server did not open port $srv_port in 90s; check $srv_inst/logs/server.log"
+      fi
+      echo "server up; launching client '$cli_name' with -connect=127.0.0.1:$srv_port"
+      # Bash cannot export a name starting with a digit; the connect mod
+      # reads the canonical name, so hand it over with env(1). cmd_launch
+      # re-resolves it via printenv and passes it to the game the same way
+      # launch_client.sh does.
+      exec env 7DTD_CONNECT="127.0.0.1:$srv_port" \
+        SB_CLIENT_CONNECT="127.0.0.1:$srv_port" \
+        bash "$0" launch "$cli_name" -connect="127.0.0.1:$srv_port" "$@"
+      ;;
+    *) die "unknown mode '$mode' (use client | server | both)" ;;
+  esac
+}
+
+# --- dispatch --------------------------------------------------------------
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    init) cmd_init ;;
+    doctor) cmd_doctor ;;
+    fetch-base|fetch) cmd_fetch "${1:-}" ;;
+    fetch-server-base) cmd_fetch_server_base "${1:-}" ;;
+    run)
+      [[ $# -ge 2 ]] || die "usage: sb run <client|server|both> <name> [-- args...]"
+      local rmode="$1" rname="$2"; shift 2
+      [[ "${1:-}" == "--" ]] && shift
+      cmd_run "$rmode" "$rname" "$@"
+      ;;
+    create) [[ $# -ge 1 ]] || die "usage: sb create <name>"; cmd_create "$1" ;;
+    create-server) [[ $# -ge 1 ]] || die "usage: sb create-server <name>"; cmd_create_server "$1" ;;
+    destroy)
+      [[ $# -ge 1 ]] || die "usage: sb destroy <name> [name...]"
+      local dn; for dn in "$@"; do cmd_destroy "$dn"; done
+      ;;
+    wipe)
+      [[ $# -ge 1 ]] || die "usage: sb wipe <name> [name...]"
+      local wn; for wn in "$@"; do cmd_wipe "$wn"; done
+      ;;
+    list|ls) cmd_list ;;
+    status) [[ $# -ge 1 ]] || die "usage: sb status <name>"; cmd_status "$1" ;;
+    launch|run-launch)
+      [[ $# -ge 1 ]] || die "usage: sb launch <name> [-- args...]"
+      local lname="$1"; shift
+      [[ "${1:-}" == "--" ]] && shift
+      cmd_launch "$lname" "$@"
+      ;;
+    launch-server)
+      [[ $# -ge 1 ]] || die "usage: sb launch-server <name> [-- args...]"
+      local lsname="$1"; shift
+      [[ "${1:-}" == "--" ]] && shift
+      cmd_launch_server "$lsname" "$@"
+      ;;
+    stop)
+      [[ $# -ge 1 ]] || die "usage: sb stop <name> [name...]"
+      local sn; for sn in "$@"; do cmd_stop "$sn"; done
+      ;;
+    logs) [[ $# -ge 1 ]] || die "usage: sb logs <name> [-f]"; cmd_logs "$1" "${2:-}" ;;
+    env) [[ $# -ge 1 ]] || die "usage: sb env <name>"; cmd_env "$1" ;;
+    help|-h|--help|"") usage ;;
+    *) die "unknown command '$cmd' (see 'sb help')" ;;
+  esac
+}
+
+main "$@"

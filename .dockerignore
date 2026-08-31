@@ -1,0 +1,6 @@
+base/
+instances/
+tools/steamcmd/
+.git/
+*.log
+output_log_live.txt

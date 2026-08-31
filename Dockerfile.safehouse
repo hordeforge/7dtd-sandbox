@@ -1,0 +1,57 @@
+# 7dtd-client-sandbox runtime. Game trees stay on the host (bind-mounted);
+# this image is just steamcmd + the host libraries Proton/DXVK need to talk
+# to an AMD/Intel GPU and the host X11 socket.
+#
+#   docker build -t 7dtd-safehouse:latest -f Dockerfile.safehouse .
+#   ./scripts/docker-gui.sh launch gamma
+FROM steamcmd/steamcmd:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# steamcmd/steamcmd is Ubuntu 26.04. python3 is required because Proton's
+# launcher is a python3 script; the rest is what DXVK/wine need to open an
+# X11 window on /dev/dri (RADV on this host).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        ca-certificates \
+        libvulkan1 \
+        mesa-vulkan-drivers \
+        libgl1 \
+        libgl1-mesa-dri \
+        libasound2t64 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxext6 \
+        libxrandr2 \
+        libxcursor1 \
+        libxi6 \
+        libxinerama1 \
+        libxxf86vm1 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxfixes3 \
+        libxrender1 \
+        libdbus-1-3 \
+        libfreetype6 \
+        libfontconfig1 \
+        libgnutls30t64 \
+        && rm -rf /var/lib/apt/lists/*
+
+# sb looks for $SANDBOX_STEAMCMD/steamcmd.sh. The upstream image keeps it
+# under the steamcmd user's Steam tree; expose a stable path.
+RUN mkdir -p /opt/steamcmd \
+    && ln -sf /root/.local/share/Steam/steamcmd/steamcmd.sh /opt/steamcmd/steamcmd.sh \
+    && ln -sf /usr/bin/steamcmd /opt/steamcmd/steamcmd
+
+COPY scripts/sb /usr/local/bin/sb
+RUN chmod 0755 /usr/local/bin/sb
+
+WORKDIR /sandbox
+ENV SANDBOX_HOME=/sandbox \
+    SANDBOX_STEAMCMD=/opt/steamcmd \
+    STEAM_ROOT=/opt/steam \
+    HOME=/tmp/sb-home
+
+ENTRYPOINT ["/usr/local/bin/sb"]
+CMD ["help"]
