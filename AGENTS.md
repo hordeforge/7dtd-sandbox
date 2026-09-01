@@ -119,6 +119,7 @@ Every instance `instances/<name>/` is fully independent:
 | `logs/` | Host-side log dir (client: symlink from prefix; server: direct write). |
 | `instance.env` | The standardized contract (below). Server instances carry `SERVER_KIND=server`, their port block, and `SERVER_ADMINS`. |
 | `instance.props` | Server only: the serverconfig properties declared for this instance (`sb render-config`). The config is rebuilt from these, never edited in place. |
+| `instance.env` (client) | Also declares the window: `SB_RES`, `SB_FULLSCREEN`. |
 
 Steam is never involved: no `steam -applaunch`, no Steam-managed library path
 (`assert_not_steam_owned` refuses any base/instance under a `steamapps` tree),
@@ -131,8 +132,8 @@ everything else is derived from them:
 
 | File | Declares |
 |---|---|
-| `instance.env` | identity, paths, the port block, `SERVER_ADMINS` |
-| `instance.props` | the serverconfig properties this instance runs with |
+| `instance.env` | identity, paths, the port block, `SERVER_ADMINS` (server), the window `SB_RES` / `SB_FULLSCREEN` (client) |
+| `instance.props` | the serverconfig properties this instance runs with (server) |
 
 Three properties follow, and each is gated:
 
@@ -149,7 +150,11 @@ Three properties follow, and each is gated:
    overlapping. `ServerPort`, `TelnetPort` and `UserDataFolder` are
    instance-owned: `sb render-config` refuses them (exit 2), because a
    serverconfig that disagrees sends every harness at a port nothing binds.
-3. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local
+3. **The client window is declared, not ambient.** `SB_RES` / `SB_FULLSCREEN`
+   live in the client's `instance.env`, so the same instance opens the same
+   window anywhere and a stray variable in a caller's shell cannot change what
+   a recorded run looked like.
+4. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local
    player names the server admits at `permission_level=0`. Seeding used to
    enumerate whatever client instances existed on the machine, so the same
    instance produced different servers on different hosts. Add names with
@@ -208,18 +213,27 @@ source /path/to/7dtd-sandbox/instances/<name>/instance.env
 | `SB_RES` / `SB_FULLSCREEN` | windowed resolution (`1280x720`) / windowed (`0`) |
 | `SB_SCREEN_ARGS` | the resolved `-screen-*` arguments every launcher passes |
 
-**A sandbox client always starts windowed at `SB_RES` (default `1280x720`).**
-It is a test fixture, not a game session: it must never take the display
-fullscreen, and several instances have to be visible at once. `sb env` exports
-the resolved arguments as `SB_SCREEN_ARGS`, and every launcher passes them, so
-a client started through `7dtd-fastconnect`'s `launch_client.sh` (the path
-`7dtd-playtest` uses) gets the same window as one started by `sb launch`. The
-command line wins over whatever the Proton prefix last saved, which is why
-this is passed at every launch rather than seeded once into the prefix.
+**A sandbox client always starts windowed at the resolution it declared**
+(`SB_RES` in its `instance.env`, default `1280x720`). It is a test fixture, not
+a game session: it must never take the display fullscreen, and several
+instances have to be visible at once.
 
-`SB_FULLSCREEN=1` opts out, and a caller passing its own `-screen-*` arguments
-to `sb launch` overrides the default. A malformed `SB_RES` or `SB_FULLSCREEN`
-is a refusal, not a silent fallback to no window arguments.
+The window is declared, not ambient. `sb create <name> [--res WxH]
+[--fullscreen 0|1]` records it in `instance.env`; every later launch reads it
+from there, so the same instance opens the same window on any machine and an
+`SB_RES` in the caller's environment at launch time changes nothing. Edit
+`instance.env` and relaunch to change it, exactly like `SERVER_ADMINS`.
+
+`sb env` exports the resolved arguments as `SB_SCREEN_ARGS`, and every launcher
+passes them, so a client started through `7dtd-fastconnect`'s
+`launch_client.sh` (the path `7dtd-playtest` uses) gets the same window as one
+started by `sb launch`. The command line wins over whatever the Proton prefix
+last saved, which is why this is passed at every launch rather than seeded once
+into the prefix. A caller passing its own `-screen-*` arguments to `sb launch`
+still wins, because that is an explicit argument rather than ambient state.
+
+A malformed declaration is a refusal, never a silent fallback to a client with
+no window arguments.
 
 ## Docker GUI (optional)
 

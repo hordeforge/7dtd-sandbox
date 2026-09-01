@@ -11,14 +11,19 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ### Added
 
-- `sb env` exports the client window contract (`SB_RES`, `SB_FULLSCREEN` and
-  the resolved `SB_SCREEN_ARGS`), so a sandbox client always starts windowed at
-  1280x720 whoever launches it. `sb launch` already did this; a client started
-  through 7dtd-fastconnect's `launch_client.sh` (the path 7dtd-playtest uses)
-  did not, and inherited whatever the Proton prefix last saved. A sandbox
-  client is a test fixture: it must never take the display fullscreen, and
-  several have to be visible at once. A malformed `SB_RES` / `SB_FULLSCREEN` is
-  now a refusal rather than a silent fallback to no window arguments.
+- **The client window is declared per instance.** `sb create <name> [--res WxH]
+  [--fullscreen 0|1]` records `SB_RES` / `SB_FULLSCREEN` in the instance's
+  `instance.env`, and every later launch reads it from there, so the same
+  instance opens the same window on any machine and an ambient `SB_RES` in a
+  caller's shell cannot change what a recorded run looked like. `sb env`
+  exports the resolved `SB_SCREEN_ARGS` and every launcher passes them, so a
+  client started through 7dtd-fastconnect's `launch_client.sh` (the path
+  7dtd-playtest uses) gets the same window as one started by `sb launch`. It
+  did not before, and inherited whatever the Proton prefix last saved; a
+  sandbox client is a test fixture that must never take the display, and
+  several have to be visible at once now that instances run in parallel. A
+  malformed declaration is a refusal rather than a silent fallback to a client
+  with no window arguments.
 
 ### Fixed
 

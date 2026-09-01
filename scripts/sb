@@ -50,7 +50,9 @@ Underlying commands (full control):
                        steamcmd-pull the pristine client (Windows depot forced)
   fetch-server-base [--validate]
                        steamcmd-pull the dedicated server (anonymous OK)
-  create <name>        fresh isolated client instance (game copy + Proton prefix)
+  create <name> [--res WxH] [--fullscreen 0|1]
+                       fresh isolated client instance (game copy + Proton
+                       prefix + its declared window; default windowed 1280x720)
   create-server <name> [--admin NAME...]
                        fresh isolated server instance (game copy + name-derived
                        port block + declared Local admins)
@@ -529,7 +531,17 @@ cmd_doctor() {
 }
 
 cmd_create() {
-  local name="$1"
+  local name="$1"; shift || true
+  local res="${SB_RES:-1280x720}" fullscreen="${SB_FULLSCREEN:-0}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --res) shift; [[ $# -gt 0 ]] || usage_err "--res needs WIDTHxHEIGHT"; res="$1" ;;
+      --fullscreen) shift; [[ $# -gt 0 ]] || usage_err "--fullscreen needs 0 or 1"; fullscreen="$1" ;;
+      *) usage_err "unknown create option '$1' (--res WxH | --fullscreen 0|1)" ;;
+    esac
+    shift
+  done
+  validate_window "$res" "$fullscreen"
   validate_name "$name"
   require_base
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
@@ -545,6 +557,9 @@ cmd_create() {
   cat > "$inst/instance.env" <<EOF
 # 7dtd-client-sandbox instance contract (source or eval this file).
 # Written by 'sb create'; consumed by 'sb launch' and sibling harnesses.
+# SB_RES / SB_FULLSCREEN are this instance's window, declared here rather than
+# read from the caller's environment, so the same instance opens the same
+# window on any machine. Edit them and relaunch to change it.
 SANDBOX_NAME=$name
 INSTANCE_DIR=$inst
 GAME=$inst/game
@@ -553,6 +568,8 @@ PROTON=$PROTON
 STEAM_ROOT=$STEAM_ROOT
 STEAM_APPID=$STEAM_APPID
 LOGFILE=$inst/logs/output_log_client.txt
+SB_RES=$res
+SB_FULLSCREEN=$fullscreen
 EOF
   echo "initializing Proton prefix (first run; one-time cost)..."
   if ( cd "$inst/game" \
@@ -674,8 +691,12 @@ cmd_env() {
   # Resolved before the heredoc: inside a command substitution `die` would exit
   # the subshell and hand the caller an empty value instead of a refusal, so a
   # bad SB_RES would silently produce a client with no window arguments.
-  local screen_args
-  screen_args="$(sandbox_screen_args)"
+  local screen_args res fullscreen
+  screen_args="$(sandbox_screen_args "$inst")"
+  res="$(sed -n 's/^SB_RES=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  fullscreen="$(sed -n 's/^SB_FULLSCREEN=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  [[ -n "$res" ]] || res=1280x720
+  [[ -n "$fullscreen" ]] || fullscreen=0
   cat <<EOF
 export SANDBOX_NAME='$name'
 export INSTANCE_DIR='$inst'
@@ -685,8 +706,8 @@ export PROTON='$PROTON'
 export STEAM_ROOT='$STEAM_ROOT'
 export STEAM_APPID='$STEAM_APPID'
 export LOGFILE='$inst/logs/output_log_client.txt'
-export SB_RES='${SB_RES:-1280x720}'
-export SB_FULLSCREEN='${SB_FULLSCREEN:-0}'
+export SB_RES='$res'
+export SB_FULLSCREEN='$fullscreen'
 export SB_SCREEN_ARGS='$screen_args'
 EOF
 }
@@ -720,7 +741,7 @@ cmd_launch() {
   esac
   local screen_args=()
   if ! printf '%s\0' "$@" | grep -qz -- '-screen-'; then
-    read -r -a screen_args <<< "$(sandbox_screen_args)"
+    read -r -a screen_args <<< "$(sandbox_screen_args "$inst")"
   fi
   local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_sandbox.txt"
   echo "sandbox:   $name"
@@ -789,11 +810,23 @@ cmd_logs() {
 # this is passed rather than seeded into the registry, and `sb env` exports it
 # so a launcher that is not `sb launch` (7dtd-fastconnect's launch_client.sh,
 # used by 7dtd-playtest) applies the same window.
-sandbox_screen_args() {
-  local res="${SB_RES:-1280x720}"
+validate_window() {
+  local res="$1" fullscreen="$2"
   [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
-  local fullscreen="${SB_FULLSCREEN:-0}"
   case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
+}
+
+# The window this instance declared. Read from its instance.env, not from the
+# caller's environment: the same instance must open the same window on any
+# machine. An instance created before the window was declared falls back to the
+# defaults, which is what it was getting anyway.
+sandbox_screen_args() {
+  local inst="$1" res fullscreen
+  res="$(sed -n 's/^SB_RES=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  fullscreen="$(sed -n 's/^SB_FULLSCREEN=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  [[ -n "$res" ]] || res=1280x720
+  [[ -n "$fullscreen" ]] || fullscreen=0
+  validate_window "$res" "$fullscreen"
   echo "-screen-fullscreen $fullscreen -screen-width ${res%%x*} -screen-height ${res##*x}"
 }
 
@@ -997,7 +1030,11 @@ main() {
       [[ "${1:-}" == "--" ]] && shift
       cmd_run "$rmode" "$rname" "$@"
       ;;
-    create) [[ $# -ge 1 ]] || die "usage: sb create <name>"; cmd_create "$1" ;;
+    create)
+      [[ $# -ge 1 ]] || die "usage: sb create <name> [--res WxH] [--fullscreen 0|1]"
+      local crname="$1"; shift
+      cmd_create "$crname" "$@"
+      ;;
     create-server)
       [[ $# -ge 1 ]] || die "usage: sb create-server <name> [--admin NAME...]"
       local csname="$1"; shift
