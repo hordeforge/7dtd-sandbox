@@ -13,3 +13,6 @@ output_log_live.txt
 
 # docker-gui shader cache overlay
 .scratch/
+
+# python bytecode from scripts/sbconfig.py and its gate
+__pycache__/

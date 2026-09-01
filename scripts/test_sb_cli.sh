@@ -46,6 +46,13 @@ check "plain name passes val"    2 "$SB" status "plain-name" # dies on missing i
 # --- temp sandbox: create/list/status/env/stop -----------------------------
 
 TMP="$(mktemp -d)"
+# A stub Proton, so the client-side surface (env, launch refusals) is testable
+# on a machine that has no Steam runtime at all. detect_proton takes PROTON
+# when it is executable, and nothing here actually runs the game.
+PROTON="$TMP/proton-stub"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$PROTON"
+chmod +x "$PROTON"
+export PROTON
 trap 'rm -rf "$TMP"' EXIT
 check "list empty ok"           0 env SANDBOX_HOME="$TMP" "$SB" list
 check "status missing dies"     2 env SANDBOX_HOME="$TMP" "$SB" status nope
@@ -80,7 +87,13 @@ check "logs with file ok"       0 env SANDBOX_HOME="$TMP" "$SB" logs t1
 
 mkdir -p "$TMP/steamlib/steamapps/common"
 check "create in steamapps dies" 1 env SANDBOX_HOME="$TMP/steamlib" "$SB" create s1
-guard_out="$(env SANDBOX_INSTANCES="$TMP/steamlib/steamapps" "$SB" list 2>&1 || true)"
+# With a base present, the refusal must come from the steamapps guard itself
+# and name the library, not from require_base further up.
+mkdir -p "$TMP/steamlib/base/game"
+touch "$TMP/steamlib/base/game/7DaysToDie.exe"
+guard_out="$(env SANDBOX_HOME="$TMP/steamlib" "$SB" create s2 2>&1 || true)"
+grep -q "Steam library" <<<"$guard_out" \
+  || { echo "FAIL: steamapps refusal did not name the Steam library: $guard_out" >&2; fail=1; }
 check "doctor flags steam lib"  1 env SANDBOX_HOME="$TMP/steamlib" "$SB" doctor
 
 # --- server instance env contract ------------------------------------------
@@ -92,6 +105,32 @@ check "status server ok"        0 env SANDBOX_HOME="$TMP" "$SB" status srv-t
 status_out="$(env SANDBOX_HOME="$TMP" "$SB" status srv-t)"
 grep -q "srv-t (server)" <<<"$status_out" || { echo "FAIL: status not server-kind" >&2; fail=1; }
 check "launch on server dies"   1 env SANDBOX_HOME="$TMP" "$SB" launch srv-t
+
+# --- up / stage / render-config surface ------------------------------------
+
+check "up without name usage"   2 env SANDBOX_HOME="$TMP" "$SB" up
+check "up bad flag usage"       2 env SANDBOX_HOME="$TMP" "$SB" up srv-t --nope
+check "up bad timeout usage"    2 env SANDBOX_HOME="$TMP" "$SB" up srv-t --timeout soon
+check "up on client instance"   1 env SANDBOX_HOME="$TMP" "$SB" up t1
+check "stage without dirs"      2 env SANDBOX_HOME="$TMP" "$SB" stage t1
+check "stage missing instance"  2 env SANDBOX_HOME="$TMP" "$SB" stage nosuch "$TMP"
+check "stage non-modlet dies"   1 env SANDBOX_HOME="$TMP" "$SB" stage t1 "$TMP"
+mkdir -p "$TMP/instances/srv-t/game"
+printf '<ServerSettings>\n</ServerSettings>\n' > "$TMP/instances/srv-t/game/serverconfig.xml"
+check "render-config no props"  2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t
+check "render-config bad prop"  2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t NoEquals
+
+mkdir -p "$TMP/modsrc/DemoMod"
+touch "$TMP/modsrc/DemoMod/ModInfo.xml"
+check "stage modlet ok"         0 env SANDBOX_HOME="$TMP" "$SB" stage t1 "$TMP/modsrc/DemoMod"
+[[ -f "$TMP/instances/t1/game/Mods/DemoMod/ModInfo.xml" ]] \
+  || { echo "FAIL: staged modlet missing from instance Mods" >&2; fail=1; }
+[[ -L "$TMP/instances/t1/game/Mods/DemoMod" ]] \
+  && { echo "FAIL: staged modlet is a symlink, not a real copy" >&2; fail=1; }
+
+check "render-config sets prop" 0 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t GameWorld=Navezgane
+grep -q 'name="GameWorld" value="Navezgane"' "$TMP/instances/srv-t/serverconfig.xml" \
+  || { echo "FAIL: render-config did not set GameWorld" >&2; fail=1; }
 check "env server kind ok"      0 env SANDBOX_HOME="$TMP" "$SB" env srv-t
 
 # --- fetch arg validation ----------------------------------------------------

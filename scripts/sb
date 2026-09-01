@@ -21,8 +21,13 @@ STEAMCMD_DIR="${SANDBOX_STEAMCMD:-$SANDBOX_HOME/tools/steamcmd}"
 STEAM_APPID="${STEAM_APPID:-251570}"
 SERVER_APPID="${SERVER_APPID:-294420}"
 STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
+# Beside this script, not under SANDBOX_HOME: a caller may point
+# SANDBOX_HOME at any instance root and sb must still find its own helper.
+SB_CONFIG="${SB_CONFIG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sbconfig.py}"
 
 die() { echo "sb: $*" >&2; exit 1; }
+# Exit 2 for usage / missing-instance / bad-flag paths (test_sb_cli contract).
+usage_err() { echo "sb: $*" >&2; exit 2; }
 warn() { echo "sb: WARN: $*" >&2; }
 
 usage() {
@@ -43,7 +48,15 @@ Underlying commands (full control):
   fetch-server-base [--validate]
                        steamcmd-pull the dedicated server (anonymous OK)
   create <name>        fresh isolated client instance (game copy + Proton prefix)
-  create-server <name> fresh isolated server instance (game copy + unique ports)
+  create-server <name> [--admin NAME...]
+                       fresh isolated server instance (game copy + name-derived
+                       port block + declared Local admins)
+  up <name> [--timeout N]       start the server detached, block until its
+                       game port listens, then print the contract (stop: sb stop)
+  stage <name> <mod-dir>...     copy built modlets into the instance's Mods
+  render-config <name> KEY=VALUE...
+                       declare serverconfig properties; the config is rebuilt
+                       from the base template plus every declaration
   launch <name> [-- args...]    run client under Proton, no Steam
   launch-server <name>          run dedicated server, blocking
   wipe <name> [name...] reset game/Mods/saves to pristine
@@ -95,19 +108,31 @@ validate_name() {
 # or instances/, so a directory under any steamapps tree is refused here.
 assert_not_steam_owned() {
   local path="$1" what="$2"
-  local resolved
-  resolved="$(cd "$(dirname "$path")" 2>/dev/null && pwd)" || resolved="$path"
+  local resolved cur
+  if [[ -d "$path" ]]; then
+    resolved="$(cd "$path" 2>/dev/null && pwd)" || resolved="$path"
+  else
+    resolved="$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")" || resolved="$path"
+  fi
   case "$resolved" in
-    */steamapps/*)
+    */steamapps|*/steamapps/*)
       die "$what must not live inside a Steam library ($resolved); Steam would own and verify these files"
       ;;
   esac
+  # SANDBOX_HOME may be a Steam library root (…/steamlib with steamapps/ under it).
+  cur="$resolved"
+  while [[ -n "$cur" && "$cur" != "/" ]]; do
+    if [[ -d "$cur/steamapps" ]]; then
+      die "$what must not live inside a Steam library ($resolved); Steam would own and verify these files"
+    fi
+    cur="$(dirname "$cur")"
+  done
 }
 
 instance_dir() {
   validate_name "$1"
   local inst="$INSTANCES_DIR/$1"
-  [[ -d "$inst" ]] || die "instance '$1' not found (create it with 'sb create $1' or 'sb create-server $1')"
+  [[ -d "$inst" ]] || usage_err "instance '$1' not found (create it with 'sb create $1' or 'sb create-server $1')"
   echo "$inst"
 }
 
@@ -142,6 +167,25 @@ ensure_local_platform() {
   write_local_platform "$cfg"
   echo "instance platform.cfg set to Local (no Steam auth, no EOS)"
 }
+
+# Always-admin for Local sandbox clients. Stock auth maps PltfmId
+# `Local_<playername>` to platform="Local" userid=<playername>. Safehouse
+# never ships a seed; without this, Local joins land as permission 1000 and
+# cannot run dm/givetools. Idempotent: create the file if missing, upsert a
+# level-0 Local entry for every client instance name under INSTANCES_DIR.
+seed_sandbox_admins() {
+  local inst="$1" declared name args=()
+  declared="$(sed -n 's/^SERVER_ADMINS=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  # An instance created before SERVER_ADMINS existed still gets its pair name.
+  [[ -n "$declared" ]] || declared="$(default_server_admins "$(basename "$inst")")"
+  local IFS=,
+  for name in $declared; do
+    [[ -n "$name" ]] && args+=(--name "$name")
+  done
+  unset IFS
+  python3 "$SB_CONFIG" seed-admins "$inst/userdata" "${args[@]}"
+}
+
 
 # Host-visible logs: the game writes C:/users/steamuser/AppData/Roaming/7DaysToDie/logs
 # inside the prefix; replace that dir with a symlink to $inst/logs so harnesses
@@ -208,12 +252,14 @@ seed_offline_prefs() {
   local proton
   proton="$(detect_proton)"
   local prefs="HKCU\\Software\\The Fun Pimps\\7 Days To Die"
-  ( cd "$inst/game" \
-    && env STEAM_COMPAT_DATA_PATH="$inst/compatdata" \
-           STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
-           "$proton" run reg.exe add "$prefs" /v "DiscordDisabled_h2080590481" /t REG_DWORD /d 1 /f >/dev/null 2>&1 ) \
-    && echo "offline prefs seeded: Discord disabled" \
-    || warn "could not seed Discord-off pref (online services stay at game defaults)"
+  if ( cd "$inst/game" \
+       && env STEAM_COMPAT_DATA_PATH="$inst/compatdata" \
+              STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+              "$proton" run reg.exe add "$prefs" /v "DiscordDisabled_h2080590481" /t REG_DWORD /d 1 /f >/dev/null 2>&1 ); then
+    echo "offline prefs seeded: Discord disabled"
+  else
+    warn "could not seed Discord-off pref (online services stay at game defaults)"
+  fi
 }
 
 cmd_fetch() {
@@ -225,7 +271,7 @@ cmd_fetch() {
     --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" ;;
     --seed-from-steam) cmd_seed_from_steam; return 0 ;;
     "") ;;
-    *) die "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
+    *) usage_err "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
   esac
   assert_not_steam_owned "$BASE_GAME" "base game"
   mkdir -p "$BASE_GAME"
@@ -268,10 +314,11 @@ cmd_seed_from_steam() {
 
 cmd_fetch_server_base() {
   local validate=()
-  if [[ "${1:-}" == "--validate" ]]; then
-    validate=(-validate)
-    echo "sb: steam data-file validation enabled (--validate)"
-  fi
+  case "${1:-}" in
+    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" ;;
+    "") ;;
+    *) usage_err "unknown fetch-server-base option '$1' (--validate)" ;;
+  esac
   assert_not_steam_owned "$SERVER_BASE_GAME" "server base game"
   mkdir -p "$SERVER_BASE_GAME"
   if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +force_install_dir "$SERVER_BASE_GAME" \
@@ -281,24 +328,28 @@ cmd_fetch_server_base() {
   fi
 }
 
-# Allocate a contiguous 5-port block for a server instance: ServerPort (game,
-# UDP+TCP), +1 telnet, +2..+4 spare (the dedicated opens a few ephemeral
-# ports around ServerPort; loadgen bots also join on ServerPort+2). Blocks
-# are unique per instance (no overlap) and recorded in instance.env.
+# The instance's contiguous 5-port block, derived from its name: ServerPort
+# (game, UDP+TCP), +1 telnet, +2..+4 spare (the dedicated opens a few ephemeral
+# ports around ServerPort; loadgen bots also join on ServerPort+2).
+#
+# Name-derived, not creation-ordered: `srv-lab` gets the same ports on every
+# machine whatever was created before it, so a harness that records a port can
+# reproduce the run elsewhere. A block another instance already recorded is
+# skipped by a deterministic forward probe.
 alloc_server_ports() {
-  local base=27100 p sfile used
-  while :; do
-    used=0
-    for sfile in "$INSTANCES_DIR"/*/instance.env; do
-      [[ -r "$sfile" ]] || continue
-      p="$(sed -n 's/^SERVER_PORT=//p' "$sfile" | head -1)"
-      [[ -z "${p:-}" ]] && continue
-      if (( p + 5 > base && p < base + 5 )); then used=1; break; fi
-    done
-    (( used )) || break
-    base=$(( base + 5 ))
-  done
-  echo "$base"
+  python3 "$SB_CONFIG" port-block "$1" --instances "$INSTANCES_DIR"
+}
+
+# Local player names this server admits as permission_level=0. Declared once at
+# create time and read back from instance.env, never discovered by scanning
+# whatever other instances exist: the same declaration must produce the same
+# serveradmin.xml on any host.
+default_server_admins() {
+  local name="$1"
+  case "$name" in
+    srv-*) echo "client-${name#srv-}" ;;
+    *)     echo "" ;;
+  esac
 }
 
 cmd_create_server() {
@@ -309,8 +360,12 @@ cmd_create_server() {
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
   local inst="$INSTANCES_DIR/$name"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
-  local port
-  port="$(alloc_server_ports)"
+  local port admins
+  port="$(alloc_server_ports "$name")"
+  admins="$(default_server_admins "$name")"
+  for extra in "$@"; do
+    admins="${admins:+$admins,}$extra"
+  done
   mkdir -p "$inst"
   echo "copying server base into instance (reflink/COW)..."
   copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
@@ -320,9 +375,14 @@ platform=Steam
 crossplatform=None
 serverplatforms=Steam,LAN,Local,
 EOF
+  # Written before seeding and rendering: both read their declaration back
+  # from this file, so the instance is described in one place.
   cat > "$inst/instance.env" <<EOF
 # 7dtd-client-sandbox server instance contract (source or eval this file).
 # Written by 'sb create-server'; consumed by 'sb launch-server' and siblings.
+# SERVER_PORT is derived from SANDBOX_NAME, so the same name yields the same
+# block on any machine. SERVER_ADMINS lists the Local player names this server
+# admits at permission_level=0; edit it and relaunch to change them.
 SANDBOX_NAME=$name
 INSTANCE_DIR=$inst
 SERVER_GAME=$inst/game
@@ -330,9 +390,13 @@ SERVER_USERDATA=$inst/userdata
 SERVER_PORT=$port
 SERVER_TELNET_PORT=$(( port + 1 ))
 SERVER_CONFIG=$inst/serverconfig.xml
+SERVER_PROPS=$inst/instance.props
 SERVER_LOG=$inst/logs/server.log
+SERVER_ADMINS=$admins
 SERVER_KIND=server
 EOF
+  : > "$inst/instance.props"
+  seed_sandbox_admins "$inst"
   echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
 }
 
@@ -343,18 +407,14 @@ cmd_launch_server() {
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
   grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
   local game="$inst/game"
-  local port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env")"
-  local telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env")"
+  local port telnet_port
+  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env")"
+  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env")"
   [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
-  local cfg="$inst/serverconfig.xml"
-  local tmpl="$game/serverconfig.xml"
-  [[ -f "$cfg" ]] || cp "$tmpl" "$cfg"
-  set_server_config_value "$cfg" ServerPort "$port"
-  set_server_config_value "$cfg" TelnetPort "$telnet_port"
-  set_server_config_value "$cfg" ServerName "sandbox-$name"
-  set_server_config_value "$cfg" EACEnabled "false"
-  set_server_config_value "$cfg" UserDataFolder "$inst/userdata"
+  local cfg
+  cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
+  seed_sandbox_admins "$inst"
   echo "sandbox:   $name (server)"
   echo "game:      $game"
   echo "port:      $port (telnet $telnet_port)"
@@ -365,37 +425,56 @@ cmd_launch_server() {
     -dedicated -nographics -batchmode "$@"
 }
 
-# Set (or append) a <property name="..." value="..."/> in a serverconfig.xml.
-# The stock template pads properties with tabs and trailing comments, so match
-# the property by name anywhere on the line and replace only its value.
-set_server_config_value() {
-  local cfg="$1" key="$2" val="$3"
-  python3 - "$cfg" "$key" "$val" <<'PYEOF'
-import re, sys
-path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
-text = open(path, encoding="utf-8", errors="replace").read()
-pat = re.compile(r'(<property\s+name="%s"\s+value=")([^"]*)(")' % re.escape(key))
-def active(m):
-    start = m.start()
-    op = text.rfind("<!--", 0, start)
-    cl = text.rfind("-->", 0, start)
-    return None if op != -1 and op > cl else m
-new, _ = pat.subn(lambda m: m.group(1) + val + m.group(3), text)
-def _count_active(s):
-    total = 0
-    for m in pat.finditer(s):
-        op = s.rfind("<!--", 0, m.start())
-        cl = s.rfind("-->", 0, m.start())
-        if not (op != -1 and op > cl):
-            total += 1
-    return total
-if _count_active(new) == 0:
-    new = pat.sub("", text) if pat.search(text) and text == new else new
-    closer = "</ServerSettings>"
-    insert = '  <property name="%s" value="%s"/>\n' + closer
-    new = new.replace(closer, insert % (key, val), 1)
-open(path, "w", encoding="utf-8").write(new)
-PYEOF
+# Properties an instance owns. A caller may not declare these: the instance
+# allocated the ports and owns the userdata path, and a serverconfig that
+# disagrees would send every harness at a port the server never binds.
+INSTANCE_OWNED_PROPS="ServerPort TelnetPort UserDataFolder"
+
+# Rebuild the instance serverconfig from the pristine base template plus the
+# properties declared in instance.props. Rebuilt, never edited in place: an
+# in-place edit accumulates, so a suite that sets MaxSpawnedZombies=0 would
+# leave it set for the next suite that says nothing about spawns. Config is a
+# pure function of (base template, declared props, instance identity).
+#
+# Shared by launch-server, `up` and `run both` so the bring-up paths cannot
+# drift.
+apply_server_config() {
+  local inst="$1" name="$2" port="$3" telnet_port="$4"
+  local cfg="$inst/serverconfig.xml"
+  local args=() line
+  if [[ -f "$inst/instance.props" ]]; then
+    while IFS= read -r line; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      args+=(--set "$line")
+    done < "$inst/instance.props"
+  fi
+  # Instance-owned values go last so a declared property cannot win over them.
+  python3 "$SB_CONFIG" render "$inst/game/serverconfig.xml" "$cfg" \
+    --userdata "$inst/userdata" \
+    "${args[@]}" \
+    --set "ServerPort=$port" \
+    --set "TelnetPort=$telnet_port" \
+    --set "ServerName=sandbox-$name" \
+    --set "EACEnabled=false" >/dev/null
+  echo "$cfg"
+}
+
+# Record declared properties into instance.props (upsert by key, last write
+# wins) so the next render includes them. Returns the file path.
+record_server_props() {
+  local inst="$1"; shift
+  local props="$inst/instance.props" kv key owned
+  touch "$props"
+  for kv in "$@"; do
+    key="${kv%%=*}"
+    for owned in $INSTANCE_OWNED_PROPS; do
+      [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
+    done
+    grep -v "^$key=" "$props" > "$props.tmp" 2>/dev/null || : > "$props.tmp"
+    printf '%s\n' "$kv" >> "$props.tmp"
+    mv "$props.tmp" "$props"
+  done
+  sort -o "$props" "$props"
 }
 
 # --- commands --------------------------------------------------------------
@@ -484,12 +563,12 @@ cmd_destroy() {
   local name="$1" inst
   inst="$(instance_dir "$name")"
   local pids
-  pids="$(instance_procs "$inst")"
-  if [[ -n "$pids" ]]; then
-    echo "sb: instance '$name' is running (pids: $(echo "$pids" | tr '\n' ' ')); stopping it first"
-    kill -TERM $pids 2>/dev/null || true
+  mapfile -t pids < <(instance_procs "$inst")
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    echo "sb: instance '$name' is running (pids: ${pids[*]}); stopping it first"
+    kill -TERM "${pids[@]}" 2>/dev/null || true
     sleep 2
-    kill -KILL $pids 2>/dev/null || true
+    kill -KILL "${pids[@]}" 2>/dev/null || true
   fi
   rm -rf "$inst"
   echo "destroyed instance '$name'"
@@ -515,8 +594,12 @@ serverplatforms=Steam,LAN,Local,
 EOF
     rm -rf "$inst/userdata"
     mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs"
+    seed_sandbox_admins "$inst"
+    # The declared properties go with the state they configured: a wiped
+    # instance is the base template again, not the last suite's world.
     rm -f "$inst/serverconfig.xml"
-    echo "wiped server instance '$name': game, Mods and userdata reset to pristine base"
+    : > "$inst/instance.props"
+    echo "wiped server instance '$name': game, Mods, userdata and declared config reset to base"
     return 0
   fi
   require_base
@@ -642,20 +725,25 @@ cmd_launch() {
 
 cmd_stop() {
   local name="$1" inst
-  inst="$(instance_dir "$name")"
-  local pids
-  pids="$(instance_procs "$inst")"
-  if [[ -z "$pids" ]]; then
+  validate_name "$name"
+  inst="$INSTANCES_DIR/$name"
+  if [[ ! -d "$inst" ]]; then
     echo "sb: instance '$name' is not running"
     return 0
   fi
-  echo "stopping instance '$name' (pids: $(echo "$pids" | tr '\n' ' '))"
-  kill -TERM $pids 2>/dev/null || true
+  local pids
+  mapfile -t pids < <(instance_procs "$inst")
+  if [[ ${#pids[@]} -eq 0 ]]; then
+    echo "sb: instance '$name' is not running"
+    return 0
+  fi
+  echo "stopping instance '$name' (pids: ${pids[*]})"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
   sleep 3
-  pids="$(instance_procs "$inst")"
-  if [[ -n "$pids" ]]; then
-    echo "still alive, sending KILL: $(echo "$pids" | tr '\n' ' ')"
-    kill -KILL $pids 2>/dev/null || true
+  mapfile -t pids < <(instance_procs "$inst")
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    echo "still alive, sending KILL: ${pids[*]}"
+    kill -KILL "${pids[@]}" 2>/dev/null || true
   fi
   echo "stopped"
 }
@@ -680,19 +768,50 @@ cmd_logs() {
 
 # --- run: three-mode dispatcher -------------------------------------------
 
-# Copy the sibling 7dtd-fastconnect client mod into a client instance so
-# `sb run both` can auto-join (the stock client ignores -connect=). No-op
-# (with a note) when the sibling repo or its dist/ is absent.
+# Copy built modlets into an instance's game/Mods. Real copies, never
+# symlinks: an instance is a self-contained tree, and a symlinked mod would
+# make `sb wipe` and the base copy lie about what the instance runs.
+stage_mods() {
+  local inst="$1"; shift
+  local src base
+  mkdir -p "$inst/game/Mods"
+  for src in "$@"; do
+    [[ -d "$src" ]] || die "mod source is not a directory: $src"
+    [[ -f "$src/ModInfo.xml" ]] || die "not a modlet (no ModInfo.xml): $src"
+    base="$(basename "$src")"
+    rm -rf "$inst/game/Mods/$base"
+    cp -a "$src" "$inst/game/Mods/$base"
+    echo "staged $base into $inst/game/Mods"
+  done
+}
+
+# The sibling 7dtd-fastconnect client mod, so `sb run both` can auto-join (the
+# stock client ignores -connect=). A note instead of a failure when the sibling
+# repo or its dist/ is absent: the client still launches and sits at the menu.
 stage_fastconnect() {
   local inst="$1"
   local src="${FASTCONNECT_DIST:-$SANDBOX_HOME/../7dtd-fastconnect/dist/7dtd-fastconnect}"
-  if [[ -f "$src/7dtd-fastconnect.dll" && -f "$src/ModInfo.xml" ]]; then
-    mkdir -p "$inst/game/Mods/7dtd-fastconnect"
-    cp -f "$src/7dtd-fastconnect.dll" "$src/ModInfo.xml" "$inst/game/Mods/7dtd-fastconnect/"
-    echo "staged 7dtd-fastconnect into $inst/game/Mods (auto-join)"
+  if [[ -f "$src/ModInfo.xml" ]]; then
+    stage_mods "$inst" "$src"
   else
     warn "7dtd-fastconnect dist not found at $src; client will sit at the menu (no auto-join)"
   fi
+}
+
+# Start a server instance detached (its own session), config already rendered.
+# Shared by `sb up` and `sb run both` so the detached path exists once.
+start_server_detached() {
+  local inst="$1" name="$2" port="$3" telnet_port="$4"
+  local cfg
+  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
+  seed_sandbox_admins "$inst"
+  ( cd "$inst/game" \
+    && setsid env SB_INSTANCE="$inst" \
+         ./7DaysToDieServer.x86_64 \
+           -configfile="$cfg" -logfile "$inst/logs/server.log" \
+           -dedicated -nographics -batchmode \
+        </dev/null >"$inst/logs/server.stdout.log" 2>&1 & )
 }
 
 # Block until a TCP port accepts connections, or die after a timeout. The
@@ -710,6 +829,72 @@ wait_for_port() {
     sleep 1
   done
   return 1
+}
+
+# Bring a server instance up detached and block until its game port accepts
+# connections. `sb run server` execs and blocks forever; harnesses need a
+# bounded, exit-coded bring-up they can call and then drive. Teardown is
+# `sb stop <name>` (same instance-scoped process match as every other path).
+cmd_up() {
+  local name="$1"; shift || true
+  local timeout=180
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout) shift; [[ $# -gt 0 ]] || usage_err "--timeout needs a value"; timeout="$1" ;;
+      *) usage_err "unknown up option '$1' (--timeout N)" ;;
+    esac
+    shift
+  done
+  [[ "$timeout" =~ ^[0-9]+$ ]] || usage_err "--timeout must be a whole number of seconds"
+  validate_name "$name"
+  [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create_server "$name" >/dev/null
+  local inst="$INSTANCES_DIR/$name"
+  [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
+  grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
+  local pids
+  pids="$(instance_procs "$inst")"
+  [[ -n "$pids" ]] && die "instance '$name' is already running (pids: $(echo "$pids" | tr '\n' ' '))"
+  local port telnet_port
+  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
+  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
+  start_server_detached "$inst" "$name" "$port" "$telnet_port"
+  if ! wait_for_port 127.0.0.1 "$port" "$timeout"; then
+    die "server '$name' did not open port $port in ${timeout}s; check $inst/logs/server.log"
+  fi
+  echo "server '$name' up on port $port (telnet $telnet_port)"
+  cmd_env "$name"
+}
+
+# Copy built modlets into an instance so a harness does not reach into
+# game/Mods itself. Sources are directories containing ModInfo.xml.
+cmd_stage() {
+  local name="$1"; shift || true
+  [[ $# -ge 1 ]] || usage_err "usage: sb stage <name> <mod-dir> [mod-dir...]"
+  local inst
+  inst="$(instance_dir "$name")"
+  stage_mods "$inst" "$@"
+}
+
+# Declare serverconfig properties for an instance. The suite or scenario that
+# needs a world, a seed or spawn caps states them here rather than shipping its
+# own XML rewriter. Declarations are recorded in instance.props and the config
+# is rebuilt from the base template, so the result depends only on what is
+# declared now, not on what a previous run left behind.
+cmd_render_config() {
+  local name="$1"; shift || true
+  [[ $# -ge 1 ]] || usage_err "usage: sb render-config <name> KEY=VALUE [KEY=VALUE...]"
+  local inst kv
+  inst="$(instance_dir "$name")"
+  for kv in "$@"; do
+    [[ "$kv" == *=* ]] || usage_err "bad property '$kv' (want KEY=VALUE)"
+  done
+  record_server_props "$inst" "$@"
+  local port telnet_port
+  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
+  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
+  echo "config -> $(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
 }
 
 cmd_run() {
@@ -731,7 +916,6 @@ cmd_run() {
       # mod (reads 7DTD_CONNECT at menu, issues the console connect). Without
       # the sibling repo the client still launches and sits at the menu.
       local srv_name="srv-$name" cli_name="client-$name"
-      local create_cli=1
       if [[ ! -d "$INSTANCES_DIR/$cli_name" ]]; then
         cmd_create "$cli_name" >/dev/null
       fi
@@ -744,24 +928,7 @@ cmd_run() {
       [[ -n "$srv_port" ]] || die "no SERVER_PORT in $srv_inst/instance.env"
 
       echo "starting server '$srv_name' (port $srv_port) in background..."
-      # Rewrite the serverconfig (EAC off, UserDataFolder set, ports locked),
-      # then exec detached so we can launch the client next.
-      local cfg="$srv_inst/serverconfig.xml"
-      [[ -f "$cfg" ]] || cp "$srv_inst/game/serverconfig.xml" "$cfg"
-      set_server_config_value "$cfg" ServerPort "$srv_port"
-      set_server_config_value "$cfg" TelnetPort "$(( srv_port + 1 ))"
-      set_server_config_value "$cfg" ServerName "sandbox-$name"
-      set_server_config_value "$cfg" EACEnabled "false"
-      set_server_config_value "$cfg" UserDataFolder "$srv_inst/userdata"
-
-      ( cd "$srv_inst/game" \
-        && setsid env SB_INSTANCE="$srv_inst" \
-             ./7DaysToDieServer.x86_64 \
-               -configfile="$cfg" -logfile "$srv_inst/logs/server.log" \
-               -dedicated -nographics -batchmode \
-            </dev/null >"$srv_inst/logs/server.stdout.log" 2>&1 & )
-      sleep 1
-
+      start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$(( srv_port + 1 ))"
       echo "waiting for server port $srv_port ..."
       if ! wait_for_port 127.0.0.1 "$srv_port" 90; then
         die "server did not open port $srv_port in 90s; check $srv_inst/logs/server.log"
@@ -775,7 +942,7 @@ cmd_run() {
         SB_CLIENT_CONNECT="127.0.0.1:$srv_port" \
         bash "$0" launch "$cli_name" -connect="127.0.0.1:$srv_port" "$@"
       ;;
-    *) die "unknown mode '$mode' (use client | server | both)" ;;
+    *) usage_err "unknown mode '$mode' (use client | server | both)" ;;
   esac
 }
 
@@ -796,7 +963,34 @@ main() {
       cmd_run "$rmode" "$rname" "$@"
       ;;
     create) [[ $# -ge 1 ]] || die "usage: sb create <name>"; cmd_create "$1" ;;
-    create-server) [[ $# -ge 1 ]] || die "usage: sb create-server <name>"; cmd_create_server "$1" ;;
+    create-server)
+      [[ $# -ge 1 ]] || die "usage: sb create-server <name> [--admin NAME...]"
+      local csname="$1"; shift
+      local cadmins=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --admin) shift; [[ $# -gt 0 ]] || usage_err "--admin needs a name"; cadmins+=("$1") ;;
+          *) usage_err "unknown create-server option '$1' (--admin NAME)" ;;
+        esac
+        shift
+      done
+      cmd_create_server "$csname" "${cadmins[@]+"${cadmins[@]}"}"
+      ;;
+    up)
+      [[ $# -ge 1 ]] || usage_err "usage: sb up <name> [--timeout N]"
+      local uname="$1"; shift
+      cmd_up "$uname" "$@"
+      ;;
+    stage)
+      [[ $# -ge 2 ]] || usage_err "usage: sb stage <name> <mod-dir> [mod-dir...]"
+      local gname="$1"; shift
+      cmd_stage "$gname" "$@"
+      ;;
+    render-config)
+      [[ $# -ge 2 ]] || usage_err "usage: sb render-config <name> KEY=VALUE [KEY=VALUE...]"
+      local rname="$1"; shift
+      cmd_render_config "$rname" "$@"
+      ;;
     destroy)
       [[ $# -ge 1 ]] || die "usage: sb destroy <name> [name...]"
       local dn; for dn in "$@"; do cmd_destroy "$dn"; done
