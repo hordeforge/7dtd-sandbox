@@ -671,6 +671,11 @@ cmd_env() {
     return 0
   fi
   PROTON="$(detect_proton)"
+  # Resolved before the heredoc: inside a command substitution `die` would exit
+  # the subshell and hand the caller an empty value instead of a refusal, so a
+  # bad SB_RES would silently produce a client with no window arguments.
+  local screen_args
+  screen_args="$(sandbox_screen_args)"
   cat <<EOF
 export SANDBOX_NAME='$name'
 export INSTANCE_DIR='$inst'
@@ -680,6 +685,9 @@ export PROTON='$PROTON'
 export STEAM_ROOT='$STEAM_ROOT'
 export STEAM_APPID='$STEAM_APPID'
 export LOGFILE='$inst/logs/output_log_client.txt'
+export SB_RES='${SB_RES:-1280x720}'
+export SB_FULLSCREEN='${SB_FULLSCREEN:-0}'
+export SB_SCREEN_ARGS='$screen_args'
 EOF
 }
 
@@ -712,12 +720,7 @@ cmd_launch() {
   esac
   local screen_args=()
   if ! printf '%s\0' "$@" | grep -qz -- '-screen-'; then
-    local res="${SB_RES:-1280x720}"
-    [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
-    local fullscreen="${SB_FULLSCREEN:-0}"
-    case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
-    screen_args=(-screen-fullscreen "$fullscreen" \
-                 -screen-width "${res%%x*}" -screen-height "${res##*x}")
+    read -r -a screen_args <<< "$(sandbox_screen_args)"
   fi
   local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_sandbox.txt"
   echo "sandbox:   $name"
@@ -776,6 +779,23 @@ cmd_logs() {
 }
 
 # --- run: three-mode dispatcher -------------------------------------------
+
+# The Unity window arguments every sandbox client launches with: windowed at
+# SB_RES (default 1280x720) unless SB_FULLSCREEN=1.
+#
+# A sandbox client is a test fixture, not a game session: it must never take
+# the display fullscreen, and several of them have to be visible at once. The
+# command line wins over whatever the prefix's saved prefs hold, which is why
+# this is passed rather than seeded into the registry, and `sb env` exports it
+# so a launcher that is not `sb launch` (7dtd-fastconnect's launch_client.sh,
+# used by 7dtd-playtest) applies the same window.
+sandbox_screen_args() {
+  local res="${SB_RES:-1280x720}"
+  [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
+  local fullscreen="${SB_FULLSCREEN:-0}"
+  case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
+  echo "-screen-fullscreen $fullscreen -screen-width ${res%%x*} -screen-height ${res##*x}"
+}
 
 # Copy built modlets into an instance's game/Mods. Real copies, never
 # symlinks: an instance is a self-contained tree, and a symlinked mod would

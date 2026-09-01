@@ -9,6 +9,17 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ## [Unreleased]
 
+### Added
+
+- `sb env` exports the client window contract (`SB_RES`, `SB_FULLSCREEN` and
+  the resolved `SB_SCREEN_ARGS`), so a sandbox client always starts windowed at
+  1280x720 whoever launches it. `sb launch` already did this; a client started
+  through 7dtd-fastconnect's `launch_client.sh` (the path 7dtd-playtest uses)
+  did not, and inherited whatever the Proton prefix last saved. A sandbox
+  client is a test fixture: it must never take the display fullscreen, and
+  several have to be visible at once. A malformed `SB_RES` / `SB_FULLSCREEN` is
+  now a refusal rather than a silent fallback to no window arguments.
+
 ### Fixed
 
 - `sb up` returned only when its caller killed it. The server was started with

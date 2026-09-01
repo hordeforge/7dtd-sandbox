@@ -133,6 +133,28 @@ status_out="$(env SANDBOX_HOME="$TMP" "$SB" status srv-t)"
 grep -q "srv-t (server)" <<<"$status_out" || { echo "FAIL: status not server-kind" >&2; fail=1; }
 check "launch on server dies"   1 env SANDBOX_HOME="$TMP" "$SB" launch srv-t
 
+# --- the window contract every launcher must honour -------------------------
+
+# A sandbox client is a test fixture: never fullscreen, and several must be
+# visible at once. `sb env` exports the arguments so a launcher that is not
+# `sb launch` (fastconnect's launch_client.sh, used by playtest) applies the
+# same window instead of whatever the prefix last saved.
+env_out="$(env SANDBOX_HOME="$TMP" "$SB" env t1)"
+for needle in \
+  "SB_RES='1280x720'" \
+  "SB_FULLSCREEN='0'" \
+  "SB_SCREEN_ARGS='-screen-fullscreen 0 -screen-width 1280 -screen-height 720'"
+do
+  grep -qF "$needle" <<<"$env_out" \
+    || { echo "FAIL: sb env lost the window contract ($needle)" >&2; fail=1; }
+done
+
+res_out="$(env SANDBOX_HOME="$TMP" SB_RES=1920x1080 "$SB" env t1)"
+grep -qF "SB_SCREEN_ARGS='-screen-fullscreen 0 -screen-width 1920 -screen-height 1080'" \
+  <<<"$res_out" || { echo "FAIL: SB_RES override not reflected in SB_SCREEN_ARGS" >&2; fail=1; }
+check "bad SB_RES refused"        1 env SANDBOX_HOME="$TMP" SB_RES=huge "$SB" env t1
+check "bad SB_FULLSCREEN refused" 1 env SANDBOX_HOME="$TMP" SB_FULLSCREEN=yes "$SB" env t1
+
 # --- up / stage / render-config surface ------------------------------------
 
 check "up without name usage"   2 env SANDBOX_HOME="$TMP" "$SB" up
