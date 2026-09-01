@@ -33,9 +33,12 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
   server instance had. The pair registered different blocks, the client failed
   to deserialize the first world package, and the server kicked it minutes into
   a run with nothing naming the cause. `sb create` and `sb wipe` now prune
-  non-stock mods out of the instance (never out of the base), so what an
-  instance runs is the depot's stock set plus what was staged. `sb doctor`
-  names a contaminated base so it gets re-fetched rather than pruned forever.
+  every mod except `0_TFP_Harmony` out of the instance (never out of the base),
+  so what an instance runs is the Harmony loader plus exactly what was staged.
+  TFP's own samples go too: the dedicated depot ships `TFP_CommandExtensions`
+  and `Xample_MarkersMod` and the client ships neither, so keeping them made
+  every pair asymmetric by construction. A suite that wants one names it in its
+  mods list. `sb doctor` reports what each base ships.
 
 - `sb up` returned only when its caller killed it. The server was started with
   a backgrounded `setsid ... &`, which left it parented to `sb`; the port check

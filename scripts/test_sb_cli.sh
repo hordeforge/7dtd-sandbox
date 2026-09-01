@@ -148,13 +148,14 @@ MODS="$TMP/instances/pruneme/game/Mods"
 mkdir -p "$MODS/0_TFP_Harmony" "$MODS/TFP_CommandExtensions" "$MODS/Xample_MarkersMod" \
          "$MODS/RealEarth" "$MODS/SomeRandomMod"
 prune_out="$(prune_instance_mods "$TMP/instances/pruneme")"
-for stock in 0_TFP_Harmony TFP_CommandExtensions Xample_MarkersMod; do
-  [[ -d "$MODS/$stock" ]] \
-    || { echo "FAIL: pruning removed the depot's own mod $stock" >&2; fail=1; }
-done
-for contaminant in RealEarth SomeRandomMod; do
-  [[ -e "$MODS/$contaminant" ]] \
-    && { echo "FAIL: $contaminant survived pruning" >&2; fail=1; }
+[[ -d "$MODS/0_TFP_Harmony" ]] \
+  || { echo "FAIL: pruning removed the Harmony loader every code mod needs" >&2; fail=1; }
+# TFP's samples go too: the client and dedicated depots ship different ones, so
+# keeping them makes every pair asymmetric and the server registers content the
+# client never loaded.
+for undeclared in TFP_CommandExtensions Xample_MarkersMod RealEarth SomeRandomMod; do
+  [[ -e "$MODS/$undeclared" ]] \
+    && { echo "FAIL: undeclared mod $undeclared survived pruning" >&2; fail=1; }
 done
 grep -q "RealEarth" <<<"$prune_out" \
   || { echo "FAIL: pruning did not name what it removed: $prune_out" >&2; fail=1; }
