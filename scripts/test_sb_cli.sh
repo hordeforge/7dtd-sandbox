@@ -133,6 +133,37 @@ status_out="$(env SANDBOX_HOME="$TMP" "$SB" status srv-t)"
 grep -q "srv-t (server)" <<<"$status_out" || { echo "FAIL: status not server-kind" >&2; fail=1; }
 check "launch on server dies"   1 env SANDBOX_HOME="$TMP" "$SB" launch srv-t
 
+# --- an instance's mods are stock plus what was declared --------------------
+
+# A base seeded from a Steam install carries whatever that install had. This
+# repo's own client base carried RealEarth, so every client instance inherited
+# a terrain mod the server instance did not: the pair registered different
+# blocks, the client failed to deserialize the first world package, and the
+# server kicked it minutes into a run with nothing naming the cause.
+# shellcheck disable=SC1090,SC1091 # extract the pruner from sb without running main
+source /dev/stdin <<<"$(sed -n '/^STOCK_MOD_GLOBS=/p' "$SB")
+$(sed -n '/^prune_instance_mods()/,/^}/p' "$SB")"
+
+MODS="$TMP/instances/pruneme/game/Mods"
+mkdir -p "$MODS/0_TFP_Harmony" "$MODS/TFP_CommandExtensions" "$MODS/Xample_MarkersMod" \
+         "$MODS/RealEarth" "$MODS/SomeRandomMod"
+prune_out="$(prune_instance_mods "$TMP/instances/pruneme")"
+for stock in 0_TFP_Harmony TFP_CommandExtensions Xample_MarkersMod; do
+  [[ -d "$MODS/$stock" ]] \
+    || { echo "FAIL: pruning removed the depot's own mod $stock" >&2; fail=1; }
+done
+for contaminant in RealEarth SomeRandomMod; do
+  [[ -e "$MODS/$contaminant" ]] \
+    && { echo "FAIL: $contaminant survived pruning" >&2; fail=1; }
+done
+grep -q "RealEarth" <<<"$prune_out" \
+  || { echo "FAIL: pruning did not name what it removed: $prune_out" >&2; fail=1; }
+
+# Pruning is idempotent and silent once an instance is already clean.
+quiet_out="$(prune_instance_mods "$TMP/instances/pruneme")"
+[[ -z "$quiet_out" ]] \
+  || { echo "FAIL: a clean instance still reported a prune: $quiet_out" >&2; fail=1; }
+
 # --- the window contract every launcher must honour -------------------------
 
 # A sandbox client is a test fixture: never fullscreen, and several must be
