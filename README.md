@@ -190,11 +190,26 @@ make docker              # runtime image: client + GPU/X11, no steamcmd
 make docker-fetch        # provisioning image: steamcmd only
 ```
 
-Fetching a base still runs on the host (`tools/steamcmd`). The `fetch` image
-reaches Steam and downloads, but on this host steamcmd cannot install into a
-bind-mounted `base/`: the identical image, user and command succeed to a
-container-local path and fail on the bind mount with `Failed to install app
-'294420' (Missing configuration)`.
+Fetching runs in the `fetch` image, into a **named volume**. steamcmd installs
+fine into a Docker volume and fails on a bind mount with `Failed to install app
+'294420' (Missing configuration)` (measured on this host: same image, same
+user, same command, only the destination differs).
+
+```bash
+make fetch-server-base-docker              # anonymous, no credentials
+
+export STEAMCMD_USER=<steam-account>       # leave STEAMCMD_PASS unset
+make fetch-base-docker                     # prompts for password + Steam Guard
+```
+
+Credentials are never a build input: `docker history` prints build args and ENV
+back out, so a credential baked into a layer is published with the image. The
+client fetch is interactive at run time; only the account name crosses, through
+the environment. See [SECURITY.md](SECURITY.md).
+
+The base then lives in the `7dtd-base` volume rather than `./base`, so
+host-side `sb create` cannot reflink from it yet. Either run the client through
+the container too, or copy the volume out to `./base`.
 
 Two targets, because provisioning and running are different jobs:
 

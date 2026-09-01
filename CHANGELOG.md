@@ -32,14 +32,21 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
   `app_update` with "Missing configuration" after a clean login. Both are
   gated.
 
+- `make fetch-server-base-docker` / `make fetch-base-docker` fetch a base
+  through the container into a **named volume**. steamcmd installs fine into a
+  Docker volume and fails on a bind mount with "Failed to install app ...
+  (Missing configuration)" (measured: same image, same user, same command, only
+  the destination differs), which is why the volume is not optional.
+  Credentials are never a build input, because `docker history` prints build
+  args and ENV back out; the client fetch is interactive at run time and only
+  the account name crosses, through the environment.
+
 ### Known limitation
 
-- The `fetch` image reaches Steam and downloads, but cannot install into a
-  **bind-mounted** `base/` on this host: identical image, user and command
-  succeed to a container-local path and fail on the bind mount with "Failed to
-  install app '294420' (Missing configuration)". Fetching therefore remains a
-  host job through `tools/steamcmd`, and `tools/steamcmd` stays. Do not put
-  steamcmd back into the runtime image to work around this.
+- A base fetched this way lives in the `7dtd-base` volume, not `./base`, so
+  host-side `sb create` cannot reflink from it yet. Either run the client
+  through the container too, or copy the volume out. Do not put steamcmd back
+  into the runtime image to work around this.
 - `sb fetch-base` / `fetch-server-base` refuse by name when steamcmd is absent
   and point at the `fetch` image, instead of failing inside a `cd` to a
   directory that was never there.

@@ -19,9 +19,15 @@ PYTESTS := $(sort $(wildcard scripts/test_*.py))
 GENERATED := scripts/__pycache__ .scratch/shadercache
 DOCKER_IMAGE ?= 7dtd-safehouse:latest
 DOCKER_FETCH_IMAGE ?= 7dtd-safehouse:fetch
+# A named volume, not a bind mount: steamcmd installs fine into a Docker volume
+# and fails on a bind mount with "Failed to install app ... (Missing
+# configuration)" (measured on this host, same image, user and command; only
+# the destination differs).
+BASE_VOLUME ?= 7dtd-base
 
 .DEFAULT_GOAL := help
 .PHONY: help check lint test coverage clean version doctor docker docker-fetch
+.PHONY: fetch-base-docker fetch-server-base-docker
 .PHONY: fetch-base fetch-server-base create create-server up stage render-config
 .PHONY: launch launch-server run stop wipe destroy list env
 
@@ -35,6 +41,8 @@ help:
 	@echo "  make version  the shipped version (SB_VERSION in scripts/sb)"
 	@echo "  make docker   build the runtime image (client + GPU/X11, no steamcmd)"
 	@echo "  make docker-fetch  build the provisioning image (steamcmd only)"
+	@echo "  make fetch-server-base-docker   pull the dedicated base into a volume"
+	@echo "  make fetch-base-docker          pull the client base (STEAMCMD_USER, interactive)"
 	@echo "  make doctor   sb doctor (base / Proton / reflink readiness)"
 	@echo
 	@echo "  sb help       the full instance CLI"
@@ -83,6 +91,28 @@ docker:
 
 docker-fetch:
 	docker build --target fetch -t $(DOCKER_FETCH_IMAGE) -f Dockerfile.safehouse .
+
+# Fetch a base through the container, so the host needs no steamcmd.
+#
+# Credentials are never build inputs: a build arg or ENV lands in a layer and
+# `docker history` prints it back. The client depot needs a Steam account, so
+# that fetch is interactive (-it): steamcmd prompts for the password and the
+# Steam Guard code, and neither is ever passed on a command line, where the
+# process table would expose it. Only the account name crosses, through the
+# environment.
+fetch-server-base-docker: docker-fetch
+	docker volume create $(BASE_VOLUME) >/dev/null
+	docker run --rm -v $(BASE_VOLUME):/sandbox/base $(DOCKER_FETCH_IMAGE) fetch-server-base
+
+fetch-base-docker: docker-fetch
+	@test -n "$${STEAMCMD_USER:-}" || { \
+		echo "export STEAMCMD_USER first: app 251570 needs a Steam account that owns the game" >&2; \
+		echo "leave STEAMCMD_PASS unset and type the password at the prompt" >&2; \
+		exit 2; }
+	docker volume create $(BASE_VOLUME) >/dev/null
+	docker run --rm -it -e STEAMCMD_USER $(BASE_VOLUME_MOUNT) $(DOCKER_FETCH_IMAGE) fetch-base
+
+BASE_VOLUME_MOUNT = -v $(BASE_VOLUME):/sandbox/base
 
 # --- passthrough conveniences (full CLI: scripts/sb help) ------------------
 

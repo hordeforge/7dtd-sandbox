@@ -14,6 +14,25 @@ to one.
 
 ## Credentials
 
+- **Credentials are never a build input.** No `ARG`, no `ENV`, no secret file
+  copied into a layer: `docker history` prints build arguments and environment
+  back out of any image that has them, so a credential baked at build time is a
+  credential published with the image. The `fetch` image contains steamcmd and
+  nothing else.
+- **The credentialed fetch is interactive, at run time.**
+  `make fetch-base-docker` runs the container with a TTY so steamcmd prompts
+  for the password and the Steam Guard code. Only the account name crosses the
+  boundary, through the environment:
+
+  ```bash
+  export STEAMCMD_USER=<account>   # leave STEAMCMD_PASS unset
+  make fetch-base-docker           # type the password and 2FA code at the prompt
+  ```
+
+  `STEAMCMD_PASS` exists for an unattended host fetch and is read from the
+  environment, never argv. Prefer the prompt: an environment variable is
+  visible to anything that can read the process's environ, and a Steam Guard
+  code cannot be scripted anyway.
 - **Steam login is env-only.** `sb fetch-base` reads `STEAMCMD_USER` and
   `STEAMCMD_PASS` from the environment and passes them to steamcmd. They never
   appear in a committed file. With `STEAMCMD_PASS` unset, steamcmd prompts on
