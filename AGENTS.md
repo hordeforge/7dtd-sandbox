@@ -246,18 +246,30 @@ no window arguments.
 
 ## Docker GUI (optional)
 
-`Dockerfile.safehouse` (base `steamcmd/steamcmd`) + `scripts/docker-gui.sh`
-run the client inside a container with host X11/GPU forwarding:
+`Dockerfile.safehouse` has two targets, because provisioning and running are
+different jobs with different dependencies:
 
-```bash
-docker build -t 7dtd-safehouse:latest -f Dockerfile.safehouse .
-./scripts/docker-gui.sh launch gamma
-```
+| Target | Base | Carries | For |
+|---|---|---|---|
+| `runtime` | `ubuntu` | graphics/X11/Vulkan, python3, `sb`, `sbconfig.py` | the client under Proton (`make docker`, then `scripts/docker-gui.sh`) |
+| `fetch` | `steamcmd/steamcmd` | steamcmd, python3, `sb`, `sbconfig.py` | `sb fetch-base` into a bind-mounted `base/` (`make docker-fetch`) |
 
-Game data, instances and Proton stay on the host (bind mounts); the container
-only supplies steamcmd plus the graphics/audio runtime. Ports are not
-published. Known limitation: the dockerized client hangs during early Unity
-init (see README); use the native `sb run client` for reaching the menu.
+**The runtime image ships no steamcmd.** "No Steam at runtime" is rule 2; an
+image carrying a Steam provisioning toolchain it never invokes contradicts it
+while carrying the supply chain anyway. `sb fetch-base` there refuses by name
+and points at the `fetch` target.
+
+Both bases are pinned by digest, for the same reason the workflows pin actions
+by commit SHA. Both images ship `sbconfig.py` as well as `sb`: every
+serverconfig render, admin seed and port derivation shells out to it, so an
+image with only `sb` has a CLI whose `create`/`up`/`render-config`/`wipe`
+verbs all fail. `scripts/test_dockerfile.py` gates all of this statically, so
+CI needs no docker.
+
+Game data, instances and Proton stay on the host (bind mounts); neither image
+contains game files. Ports are not published. Known limitation: the dockerized
+client hangs during early Unity init (see README); use the native
+`sb run client` for reaching the menu.
 
 ## Rules
 

@@ -11,6 +11,23 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ### Added
 
+- **`Dockerfile.safehouse` splits into `fetch` and `runtime` targets.** The
+  runtime image was built `FROM steamcmd/steamcmd` and never invoked steamcmd
+  once: `docker-gui.sh` runs the client under Proton from the host's
+  bind-mounted Steam tree. An image shipping a Steam provisioning toolchain it
+  never uses contradicts "no Steam at runtime" while carrying the supply chain
+  anyway. steamcmd now lives in the `fetch` target, for pulling bases without
+  installing it on the host; the runtime carries only the graphics stack.
+  `make docker` / `make docker-fetch` build them, both bases are pinned by
+  digest, and `scripts/test_dockerfile.py` gates the split without needing
+  docker in CI.
+- Both images ship `sbconfig.py`, not just `sb`. Every serverconfig render,
+  admin seed and port derivation shells out to it, so the previous image had a
+  CLI whose `create`/`up`/`render-config`/`wipe` verbs all failed.
+- `sb fetch-base` / `fetch-server-base` refuse by name when steamcmd is absent
+  and point at the `fetch` image, instead of failing inside a `cd` to a
+  directory that was never there.
+
 - **The client window is declared per instance.** `sb create <name> [--res WxH]
   [--fullscreen 0|1]` records `SB_RES` / `SB_FULLSCREEN` in the instance's
   `instance.env`, and every later launch reads it from there, so the same

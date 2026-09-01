@@ -184,17 +184,32 @@ windowed), `STEAMCMD_USER`, `STEAMCMD_PASS`, `7DTD_PLAYER_NAME`.
 ## Docker GUI (optional, experimental)
 
 ```bash
-docker build -t 7dtd-safehouse:latest -f Dockerfile.safehouse .
+make docker              # runtime image: client + GPU/X11, no steamcmd
 ./scripts/docker-gui.sh launch gamma
+
+make docker-fetch        # provisioning image: steamcmd only
 ```
 
-Runs the client in a container on `steamcmd/steamcmd` with the host X11
-socket, GPU (`/dev/dri`), and ntsync forwarded; game data stays on the host
-via bind mounts. The game window appears on the desktop and GPU rendering
-works (`AMD Radeon RX 7900 XTX (RADV NAVI31)` confirmed via DXVK/D3D11), but
-the client currently hangs during early Unity init inside the container
-(log stops after `Input initialized`), so the native `sb run client` remains
-the supported path for reaching the main menu.
+Two targets, because provisioning and running are different jobs:
+
+| Target | Base | For |
+|---|---|---|
+| `runtime` | `ubuntu` (digest-pinned) | the client under Proton with the host X11 socket, GPU (`/dev/dri`) and ntsync |
+| `fetch` | `steamcmd/steamcmd` (digest-pinned) | `sb fetch-base` into a bind-mounted `base/`, without installing steamcmd on the host |
+
+The runtime image carries **no steamcmd and no Steam**: that is the product
+claim, and an image shipping a Steam provisioning toolchain it never invokes
+would contradict it while carrying the supply chain anyway. Proton comes from
+the host's Steam tree, bind-mounted read-only. Neither image contains game
+files: game trees and instances stay on the host, a 20 GB base does not belong
+in an image, and the depots are not ours to redistribute. `sb fetch-base` in
+the runtime image refuses by name and points at the `fetch` target.
+
+The game window appears on the desktop and GPU rendering works (`AMD Radeon RX
+7900 XTX (RADV NAVI31)` confirmed via DXVK/D3D11), but the client currently
+hangs during early Unity init inside the container (log stops after `Input
+initialized`), so the native `sb run client` remains the supported path for
+reaching the main menu.
 
 ## Notes
 

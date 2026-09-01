@@ -273,6 +273,17 @@ seed_offline_prefs() {
   fi
 }
 
+# Fetching needs steamcmd; running does not. The runtime container ships none
+# on purpose, so say which image does the job instead of failing inside a `cd`
+# to a directory that was never there.
+require_steamcmd() {
+  [[ -x "$STEAMCMD_DIR/steamcmd.sh" ]] && return 0
+  die "no steamcmd at $STEAMCMD_DIR/steamcmd.sh (set SANDBOX_STEAMCMD).
+    Fetching a base is a provisioning job: run it on the host, or in the
+    'fetch' image (docker build --target fetch -f Dockerfile.safehouse .).
+    The runtime image ships no steamcmd by design."
+}
+
 cmd_fetch() {
   # Steam verification off by default: -validate makes steamcmd hash-check
   # every file against the depot. The whole point of the sandbox is Steam
@@ -284,6 +295,7 @@ cmd_fetch() {
     "") ;;
     *) usage_err "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
   esac
+  require_steamcmd
   assert_not_steam_owned "$BASE_GAME" "base game"
   mkdir -p "$BASE_GAME"
   local login=(+login anonymous)
@@ -330,6 +342,7 @@ cmd_fetch_server_base() {
     "") ;;
     *) usage_err "unknown fetch-server-base option '$1' (--validate)" ;;
   esac
+  require_steamcmd
   assert_not_steam_owned "$SERVER_BASE_GAME" "server base game"
   mkdir -p "$SERVER_BASE_GAME"
   if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +force_install_dir "$SERVER_BASE_GAME" \
