@@ -149,11 +149,30 @@ do
     || { echo "FAIL: sb env lost the window contract ($needle)" >&2; fail=1; }
 done
 
-res_out="$(env SANDBOX_HOME="$TMP" SB_RES=1920x1080 "$SB" env t1)"
-grep -qF "SB_SCREEN_ARGS='-screen-fullscreen 0 -screen-width 1920 -screen-height 1080'" \
-  <<<"$res_out" || { echo "FAIL: SB_RES override not reflected in SB_SCREEN_ARGS" >&2; fail=1; }
-check "bad SB_RES refused"        1 env SANDBOX_HOME="$TMP" SB_RES=huge "$SB" env t1
-check "bad SB_FULLSCREEN refused" 1 env SANDBOX_HOME="$TMP" SB_FULLSCREEN=yes "$SB" env t1
+# The window is the instance's declaration, not the caller's environment: the
+# same instance must open the same window on any machine, so an ambient SB_RES
+# at launch time changes nothing.
+amb_out="$(env SANDBOX_HOME="$TMP" SB_RES=1920x1080 "$SB" env t1)"
+grep -qF "SB_SCREEN_ARGS='-screen-fullscreen 0 -screen-width 1280 -screen-height 720'" \
+  <<<"$amb_out" \
+  || { echo "FAIL: an ambient SB_RES overrode the instance's declared window" >&2; fail=1; }
+
+# It is declared at create time and recorded in instance.env.
+mkdir -p "$TMP/instances/t2"
+printf 'SANDBOX_NAME=t2\nSB_RES=1920x1080\nSB_FULLSCREEN=1\n' \
+  > "$TMP/instances/t2/instance.env"
+decl_out="$(env SANDBOX_HOME="$TMP" "$SB" env t2)"
+grep -qF "SB_SCREEN_ARGS='-screen-fullscreen 1 -screen-width 1920 -screen-height 1080'" \
+  <<<"$decl_out" \
+  || { echo "FAIL: the declared window was not honoured: $decl_out" >&2; fail=1; }
+
+# A malformed declaration is a refusal, never a client with no window args.
+mkdir -p "$TMP/instances/t3"
+printf 'SANDBOX_NAME=t3\nSB_RES=huge\nSB_FULLSCREEN=0\n' > "$TMP/instances/t3/instance.env"
+check "malformed declared SB_RES refused" 1 env SANDBOX_HOME="$TMP" "$SB" env t3
+mkdir -p "$TMP/instances/t4"
+printf 'SANDBOX_NAME=t4\nSB_RES=1280x720\nSB_FULLSCREEN=yes\n' > "$TMP/instances/t4/instance.env"
+check "malformed declared SB_FULLSCREEN refused" 1 env SANDBOX_HOME="$TMP" "$SB" env t4
 
 # --- up / stage / render-config surface ------------------------------------
 
