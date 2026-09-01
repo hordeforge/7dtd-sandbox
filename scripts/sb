@@ -123,10 +123,15 @@ assert_not_steam_owned() {
       die "$what must not live inside a Steam library ($resolved); Steam would own and verify these files"
       ;;
   esac
-  # SANDBOX_HOME may be a Steam library root (…/steamlib with steamapps/ under it).
+  # SANDBOX_HOME may itself be a Steam library root (…/steamlib holding
+  # steamapps/). A library is identified by steamapps/common, not by steamapps
+  # alone: steamcmd writes its own steamapps/ (appmanifest, downloading, temp)
+  # straight into whatever +force_install_dir it was given, so `base/game`
+  # carries one after every fetch. Testing for the bare directory refused our
+  # own pristine base.
   cur="$resolved"
   while [[ -n "$cur" && "$cur" != "/" ]]; do
-    if [[ -d "$cur/steamapps" ]]; then
+    if [[ -d "$cur/steamapps/common" ]]; then
       die "$what must not live inside a Steam library ($resolved); Steam would own and verify these files"
     fi
     cur="$(dirname "$cur")"
@@ -810,12 +815,18 @@ start_server_detached() {
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
   cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
   seed_sandbox_admins "$inst"
+  # `setsid --fork` (not a backgrounded `setsid ... &`): setsid forks the
+  # server into a new session and exits immediately, so the server is orphaned
+  # to init and this shell has no child left to wait on. Backgrounding it
+  # instead left the server parented to `sb`, and `sb up` then sat in do_wait
+  # forever after its port check had already passed. `sb run both` never saw
+  # this because it execs the client over itself straight afterwards.
   ( cd "$inst/game" \
-    && setsid env SB_INSTANCE="$inst" \
+    && exec setsid --fork env SB_INSTANCE="$inst" \
          ./7DaysToDieServer.x86_64 \
            -configfile="$cfg" -logfile "$inst/logs/server.log" \
            -dedicated -nographics -batchmode \
-        </dev/null >"$inst/logs/server.stdout.log" 2>&1 & )
+        </dev/null >"$inst/logs/server.stdout.log" 2>&1 )
 }
 
 # Block until a TCP port accepts connections, or die after a timeout. The

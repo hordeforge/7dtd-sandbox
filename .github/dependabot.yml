@@ -1,0 +1,13 @@
+---
+# The workflows pin every action to a full commit SHA (REPOSITORY_STANDARDS.md
+# section 5), which is only safe if something keeps those SHAs current.
+#
+# No package ecosystem is listed: Safehouse is bash plus the Python standard
+# library, with no lockfile to update. Add one here in the same change that
+# adds a dependency.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

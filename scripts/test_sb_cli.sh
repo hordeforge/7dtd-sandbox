@@ -94,6 +94,33 @@ touch "$TMP/steamlib/base/game/7DaysToDie.exe"
 guard_out="$(env SANDBOX_HOME="$TMP/steamlib" "$SB" create s2 2>&1 || true)"
 grep -q "Steam library" <<<"$guard_out" \
   || { echo "FAIL: steamapps refusal did not name the Steam library: $guard_out" >&2; fail=1; }
+
+# steamcmd writes its own steamapps/ (appmanifest, downloading, temp) into
+# whatever +force_install_dir it is given, so every fetched base carries one.
+# That is not a Steam library and must not be refused: a library is
+# steamapps/common. This false positive refused our own pristine base, so the
+# guard is exercised directly rather than through a create that would also
+# build a Proton prefix.
+# shellcheck disable=SC1090,SC1091 # extract the guard from sb without running main
+source /dev/stdin <<<"$(sed -n '/^die()/,/^}/p' "$SB")
+$(sed -n '/^assert_not_steam_owned()/,/^}/p' "$SB")"
+
+mkdir -p "$TMP/fetched/game/steamapps/downloading"
+touch "$TMP/fetched/game/steamapps/appmanifest_251570.acf"
+if ! ( assert_not_steam_owned "$TMP/fetched/game" "base game" ) 2>/dev/null; then
+  echo "FAIL: a steamcmd manifest dir was mistaken for a Steam library" >&2
+  fail=1
+fi
+
+mkdir -p "$TMP/reallib/steamapps/common/7 Days To Die" "$TMP/reallib/base/game"
+if ( assert_not_steam_owned "$TMP/reallib/steamapps/common/7 Days To Die" "base game" ) 2>/dev/null; then
+  echo "FAIL: a path inside a real Steam library was accepted" >&2
+  fail=1
+fi
+if ( assert_not_steam_owned "$TMP/reallib/base/game" "base game" ) 2>/dev/null; then
+  echo "FAIL: a library root ancestor was accepted" >&2
+  fail=1
+fi
 check "doctor flags steam lib"  1 env SANDBOX_HOME="$TMP/steamlib" "$SB" doctor
 
 # --- server instance env contract ------------------------------------------

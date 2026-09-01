@@ -1,0 +1,10 @@
+# LF everywhere. A CRLF checkout breaks every shebang in scripts/, and `sb`
+# sources its own helpers out of itself in the gates.
+* text=auto eol=lf
+
+# Never normalised: these are data, not text.
+*.png binary
+*.jpg binary
+*.unity3d binary
+*.dll binary
+*.so binary

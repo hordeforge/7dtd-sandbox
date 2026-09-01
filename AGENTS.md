@@ -45,6 +45,52 @@ repo opens a serverconfig, allocates a port, or execs a dedicated server.
 - The client itself or its modding. `MODDING_BEST_PRACTICES.md` rules still
   apply inside every instance's `game/`.
 
+## Layout
+
+| Path | What it is |
+|---|---|
+| `scripts/sb` | The instance lifecycle CLI, and the canonical version home (`SB_VERSION`) |
+| `scripts/sbconfig.py` | Serverconfig render/get, admin seeding, name-derived port blocks |
+| `scripts/docker-gui.sh` | Containerized client with host X11/GPU forwarding (see the limitation below) |
+| `scripts/test_*.sh`, `scripts/test_*.py` | The gates; `make test` discovers them, no list to update |
+| `base/game`, `base/server-game` | Pristine steamcmd bases; never edited in place |
+| `instances/<name>/` | One instance (gitignored) |
+| `tools/steamcmd/` | The Steam console client (gitignored) |
+| `Dockerfile.safehouse` | Image for `docker-gui.sh` |
+
+Docs: [`README.md`](README.md) (what it is and how to drive it),
+[`CHANGELOG.md`](CHANGELOG.md) (what each release shipped),
+[`SECURITY.md`](SECURITY.md) (credentials, boundaries, what is deliberately
+lab-weak), this file (rules and contracts).
+
+## Gates that must not be weakened
+
+Name them, because a gate nobody can name gets relaxed to make a change pass.
+`make check test` runs all of them offline, in CI on every push and pull
+request. No game, no Proton, no steamcmd.
+
+| Gate | Pins |
+|---|---|
+| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically; admins come only from the declaration |
+| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused |
+| `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
+| `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file |
+| `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout |
+| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir |
+
+## Sibling projects
+
+Which repository owns the thing you are about to reimplement here:
+
+| Project | Owns |
+|---|---|
+| [`7dtd-playtest`](https://github.com/hordeforge/7dtd-playtest) | Suites, case refs, scoring, the client scenario mod |
+| [`7dtd-loadgen`](https://github.com/hordeforge/7dtd-loadgen) | Synthetic protocol clients; calls `scripts/sbconfig.py` for its own configs |
+| [`7dtd-fastconnect`](https://github.com/hordeforge/7dtd-fastconnect) | Client join-by-IP and the client launcher this layers under |
+| [`7dtd-server-container`](https://github.com/hordeforge/7dtd-server-container) | Production deployment; keeps its own config renderer on purpose |
+| [`7dtd-wasm`](https://github.com/hordeforge/7dtd-wasm) | Sandboxing untrusted mod code (Safehouse isolates instances, not mods) |
+| [`7dtd-engine-research`](https://github.com/hordeforge/7dtd-engine-research) | Stock-game reverse engineering. Never duplicated here |
+
 ## Three launch modes
 
 ```bash
