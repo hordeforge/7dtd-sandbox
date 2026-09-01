@@ -150,15 +150,15 @@ Three properties follow, and each is gated:
    overlapping. `ServerPort`, `TelnetPort` and `UserDataFolder` are
    instance-owned: `sb render-config` refuses them (exit 2), because a
    serverconfig that disagrees sends every harness at a port nothing binds.
-3. **An instance's mods are the depot's stock set plus what was staged.** A
-   base seeded from a Steam install carries whatever that install had, so
-   `sb create` and `sb wipe` prune every non-stock mod out of the *instance*
-   (the base is never touched: rule 1). This repo's own client base carried
-   RealEarth, so every client instance inherited a terrain mod the server
-   instance did not; the pair registered different blocks, the client failed
-   to deserialize the first world package, and the server kicked it minutes
-   into a run with nothing naming the cause. `sb doctor` names a contaminated
-   base so it gets re-fetched rather than pruned forever.
+3. **An instance's mods are `0_TFP_Harmony` plus exactly what was staged.**
+   `sb create` and `sb wipe` prune everything else out of the *instance* (the
+   base is never touched: rule 1), for two reasons. A base seeded from a Steam
+   install carries whatever that install had, and this repo's client base
+   carries RealEarth. And the two depots ship different TFP samples: the
+   dedicated carries `TFP_CommandExtensions` and `Xample_MarkersMod`, the
+   client neither, so keeping depot samples makes every pair asymmetric by
+   construction. A suite that wants one names it in its mods list like any
+   other. `sb doctor` reports what each base ships.
 4. **The client window is declared, not ambient.** `SB_RES` / `SB_FULLSCREEN`
    live in the client's `instance.env`, so the same instance opens the same
    window anywhere and a stray variable in a caller's shell cannot change what
