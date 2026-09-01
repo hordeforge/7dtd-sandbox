@@ -380,6 +380,7 @@ cmd_create_server() {
   mkdir -p "$inst"
   echo "copying server base into instance (reflink/COW)..."
   copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
+  prune_instance_mods "$inst"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
   cat > "$inst/game/platform.cfg" <<'EOF'
 platform=Steam
@@ -515,6 +516,36 @@ cmd_doctor() {
   else
     echo "server base missing; run 'sb fetch-server-base'"
   fi
+  echo "--- base mods ---"
+  # A base seeded from a Steam install carries whatever that install had. An
+  # instance prunes those, so a run is not broken by them, but a contaminated
+  # base is still worth naming: it makes every fresh instance do that work, and
+  # it means the base is not the pristine depot the isolation story claims.
+  local b label
+  for b in "$BASE_GAME:client" "$SERVER_BASE_GAME:server"; do
+    label="${b##*:}"
+    b="${b%%:*}"
+    [[ -d "$b/Mods" ]] || continue
+    local extra=() entry name pattern keep
+    for entry in "$b/Mods"/*; do
+      [[ -e "$entry" ]] || continue
+      name="$(basename "$entry")"
+      keep=0
+      # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
+      for pattern in $STOCK_MOD_GLOBS; do
+        # shellcheck disable=SC2053 # pattern is a glob, not a literal
+        [[ "$name" == $pattern ]] && { keep=1; break; }
+      done
+      (( keep )) || extra+=("$name")
+    done
+    if (( ${#extra[@]} )); then
+      warn "$label base carries non-stock mods: ${extra[*]}"
+      echo "      instances prune these, but the base is no longer a pristine depot copy."
+      echo "      re-fetch it to restore that ('sb fetch-base' / 'sb fetch-server-base')."
+    else
+      echo "$label base: stock mods only"
+    fi
+  done
   echo "--- reflink ---"
   local probe="$SANDBOX_HOME/base/.reflink_probe"
   if cp --reflink=always "$BASE_GAME/7DaysToDie.exe" "$probe" 2>/dev/null; then
@@ -552,6 +583,7 @@ cmd_create() {
   mkdir -p "$inst"
   echo "copying base game into instance (reflink/COW)..."
   copy_tree "$BASE_GAME" "$inst/game" "base game"
+  prune_instance_mods "$inst"
   write_local_platform "$inst/game/platform.cfg"
   mkdir -p "$inst/compatdata" "$inst/logs"
   cat > "$inst/instance.env" <<EOF
@@ -613,6 +645,7 @@ cmd_wipe() {
     [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
     rm -rf "$inst/game"
     copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
+    prune_instance_mods "$inst"
     cat > "$inst/game/platform.cfg" <<'EOF'
 platform=Steam
 crossplatform=None
@@ -631,6 +664,7 @@ EOF
   require_base
   rm -rf "$inst/game"
   copy_tree "$BASE_GAME" "$inst/game" "base game"
+  prune_instance_mods "$inst"
   write_local_platform "$inst/game/platform.cfg"
   seed_offline_prefs "$inst"
   local roam="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie"
@@ -828,6 +862,44 @@ sandbox_screen_args() {
   [[ -n "$fullscreen" ]] || fullscreen=0
   validate_window "$res" "$fullscreen"
   echo "-screen-fullscreen $fullscreen -screen-width ${res%%x*} -screen-height ${res##*x}"
+}
+
+# Mods the game itself ships: the Harmony loader every code mod needs, and
+# TFP's own command/sample modlets. Everything else in an instance is either
+# staged from a declaration or contamination the base carried in.
+STOCK_MOD_GLOBS='0_TFP_Harmony TFP_* Xample_*'
+
+# An instance's Mods are exactly what the depot ships plus what was declared.
+#
+# A base seeded from a Steam install carries whatever that install had. This
+# repo's own client base carries RealEarth, so every client instance inherited
+# a terrain mod the server instance did not: the pair registered different
+# blocks, the client failed to deserialize the first world package and the
+# server kicked it, minutes into a run, with nothing naming the cause.
+#
+# Pruning happens in the instance, never in the base (rule 1): the base stays
+# the pristine depot copy, and what an instance runs stays a pure function of
+# the depot's stock mods and the declaration.
+prune_instance_mods() {
+  local inst="$1" mods="$1/game/Mods" entry base keep removed=()
+  [[ -d "$mods" ]] || return 0
+  for entry in "$mods"/*; do
+    [[ -e "$entry" ]] || continue
+    base="$(basename "$entry")"
+    keep=0
+    # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
+    for pattern in $STOCK_MOD_GLOBS; do
+      # shellcheck disable=SC2053 # pattern is a glob, not a literal
+      [[ "$base" == $pattern ]] && { keep=1; break; }
+    done
+    (( keep )) && continue
+    rm -rf "$entry"
+    removed+=("$base")
+  done
+  if (( ${#removed[@]} )); then
+    echo "pruned non-stock mods the base carried in: ${removed[*]}"
+    echo "  (the base itself is untouched; stage what this instance needs)"
+  fi
 }
 
 # Copy built modlets into an instance's game/Mods. Real copies, never

@@ -150,11 +150,20 @@ Three properties follow, and each is gated:
    overlapping. `ServerPort`, `TelnetPort` and `UserDataFolder` are
    instance-owned: `sb render-config` refuses them (exit 2), because a
    serverconfig that disagrees sends every harness at a port nothing binds.
-3. **The client window is declared, not ambient.** `SB_RES` / `SB_FULLSCREEN`
+3. **An instance's mods are the depot's stock set plus what was staged.** A
+   base seeded from a Steam install carries whatever that install had, so
+   `sb create` and `sb wipe` prune every non-stock mod out of the *instance*
+   (the base is never touched: rule 1). This repo's own client base carried
+   RealEarth, so every client instance inherited a terrain mod the server
+   instance did not; the pair registered different blocks, the client failed
+   to deserialize the first world package, and the server kicked it minutes
+   into a run with nothing naming the cause. `sb doctor` names a contaminated
+   base so it gets re-fetched rather than pruned forever.
+4. **The client window is declared, not ambient.** `SB_RES` / `SB_FULLSCREEN`
    live in the client's `instance.env`, so the same instance opens the same
    window anywhere and a stray variable in a caller's shell cannot change what
    a recorded run looked like.
-4. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local
+5. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local
    player names the server admits at `permission_level=0`. Seeding used to
    enumerate whatever client instances existed on the machine, so the same
    instance produced different servers on different hosts. Add names with

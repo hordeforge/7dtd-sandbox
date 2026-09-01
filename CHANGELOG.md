@@ -27,6 +27,16 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ### Fixed
 
+- **An instance no longer inherits mods the base happened to carry.** A base
+  seeded from a Steam install carries whatever that install had; this repo's
+  client base carries RealEarth, so every client instance ran a terrain mod no
+  server instance had. The pair registered different blocks, the client failed
+  to deserialize the first world package, and the server kicked it minutes into
+  a run with nothing naming the cause. `sb create` and `sb wipe` now prune
+  non-stock mods out of the instance (never out of the base), so what an
+  instance runs is the depot's stock set plus what was staged. `sb doctor`
+  names a contaminated base so it gets re-fetched rather than pruned forever.
+
 - `sb up` returned only when its caller killed it. The server was started with
   a backgrounded `setsid ... &`, which left it parented to `sb`; the port check
   passed and then the shell sat in `do_wait` forever, hanging every harness
