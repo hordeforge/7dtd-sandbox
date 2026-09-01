@@ -9,6 +9,40 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ## [Unreleased]
 
+### Fixed
+
+- `sb up` returned only when its caller killed it. The server was started with
+  a backgrounded `setsid ... &`, which left it parented to `sb`; the port check
+  passed and then the shell sat in `do_wait` forever, hanging every harness
+  that called it. `setsid --fork` orphans the server properly.
+  `sb run both` never showed this because it execs the client over itself
+  immediately afterwards. Gated by `scripts/test_sb_up.py`, which drives the
+  real CLI against a fake listener.
+- The Steam-library guard refused this repository's own pristine base.
+  steamcmd writes its own `steamapps/` (appmanifest, downloading, temp) into
+  whatever `+force_install_dir` it is given, and the ancestor walk read that
+  bare directory as a Steam library. A library is `steamapps/common`.
+
+### Added
+
+- `make check` (the full static verdict) and `make clean`; `help` is the
+  default goal. `make coverage` explains why there is no coverage number here
+  rather than producing one nothing regenerates. `make up`, `make stage` and
+  `make render-config` pass through to the matching `sb` verbs.
+- `.gitattributes`, `.github/dependabot.yml`, `SECURITY.md`, `CLAUDE.md`, and
+  the standard README header and badges, so the repository satisfies
+  hordeforge/.github `REPOSITORY_STANDARDS.md` sections 1 through 5.
+- CI runs `make check test` and then exercises the installed entry point
+  (`sb version` against `SB_VERSION`, `sb help`, `sb list`), so a broken
+  dispatch fails here rather than in a sibling harness.
+- `AGENTS.md` gains a layout table, a named list of the gates that must not be
+  weakened, and a sibling-ownership table.
+
+### Changed
+
+- `make lint` degrades with a printed note when shellcheck is absent on a dev
+  host and hard-fails in CI, instead of failing everywhere.
+
 ## [0.1.0] - 2026-09-01
 
 First tagged release. Safehouse is tier 0 and tier 1 of the workspace testing

@@ -1,10 +1,30 @@
-# 🏠 Safehouse (`7dtd-sandbox/`)
+# 🏠 Safehouse (Lab Isolation)
 
-Standardized, Steam-free 7DTD **client and dedicated-server** instances for
-sibling harnesses. Each instance is a fresh, isolated copy of a pristine base
-plus its own Proton prefix (client) or userdata (server), so `7dtd-playtest`,
-`7dtd-fastconnect`, and friends can run independent tests without clobbering
-each other's Mods, saves, config, logs, or the Steam-managed install.
+> **Part of [HordeForge](https://github.com/hordeforge)**: High-Performance Systems Engineering for 7 Days to Die.
+
+![CI](https://github.com/hordeforge/7dtd-sandbox/actions/workflows/ci.yml/badge.svg)
+![license](https://img.shields.io/github/license/hordeforge/7dtd-sandbox)
+![release](https://img.shields.io/github/v/release/hordeforge/7dtd-sandbox)
+
+Steam-free 7DTD **client and dedicated-server** instances for every harness in
+the workspace. Each instance is a fresh copy of a pristine base with its own
+game tree, port block, Proton prefix (client) or userdata (server), so
+`7dtd-playtest`, `7dtd-loadgen` and friends run independent tests without
+clobbering each other's Mods, saves, config, logs, or the Steam-managed
+install. Several instances run side by side.
+
+An instance is *described*, not accumulated: `instance.env` holds its identity,
+ports and admins, `instance.props` holds the serverconfig properties it runs
+with, and its config is rebuilt from the pristine template on every launch. The
+same declaration produces the same instance on any machine.
+
+```bash
+make test              # every gate; no game, no Proton, no steamcmd needed
+./scripts/sb doctor    # what this machine still needs for a real instance
+```
+
+No coverage badge: `sb` is bash and would need kcov, which CI does not run.
+`make coverage` says so rather than producing a number nothing regenerates.
 
 ## Three launch modes
 
