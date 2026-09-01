@@ -1,0 +1,46 @@
+---
+name: release
+
+# Tag-driven releases (hordeforge/.github REPOSITORY_STANDARDS.md, §8): a
+# vX.Y.Z tag must agree with the version this repository actually ships, so a
+# mistyped or forgotten bump is rejected instead of becoming a release nobody
+# can reproduce.
+#
+# No artifact is built here. Safehouse ships shell and stdlib Python, and the
+# game trees it manages come from steamcmd on the operator's own machine;
+# there is nothing to package that a checkout does not already contain.
+# Gating the tag is the half that can be proven automatically.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Pinned to the release commit, not the mutable v7 tag: a moved tag
+      # would otherwise run unreviewed code here with the workflow token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check the tag matches SB_VERSION in scripts/sb
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          MANIFEST="scripts/sb"
+          case "$TAG" in v*) ;; *) echo "ERROR: tag '$TAG' does not start with 'v'" >&2; exit 1;; esac
+          SHIPPED="$(sed -n 's/^SB_VERSION="\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)"
+          if [ -z "$SHIPPED" ]; then
+            echo "ERROR: no SB_VERSION=\"...\" found in $MANIFEST" >&2
+            exit 1
+          fi
+          if [ "$SHIPPED" != "${TAG#v}" ]; then
+            echo "ERROR: tag $TAG but $MANIFEST ships $SHIPPED; make them match before tagging" >&2
+            exit 1
+          fi
+          echo "ok: tag $TAG matches $MANIFEST ($SHIPPED)"

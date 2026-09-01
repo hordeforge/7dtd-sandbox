@@ -20,6 +20,9 @@ SERVER_BASE_GAME="${SANDBOX_SERVER_BASE_GAME:-$SANDBOX_HOME/base/server-game}"
 STEAMCMD_DIR="${SANDBOX_STEAMCMD:-$SANDBOX_HOME/tools/steamcmd}"
 STEAM_APPID="${STEAM_APPID:-251570}"
 SERVER_APPID="${SERVER_APPID:-294420}"
+# Canonical version home for this repository (REPOSITORY_STANDARDS.md §8).
+# The release workflow refuses a vX.Y.Z tag that disagrees with it.
+SB_VERSION="0.1.0"
 STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
 # Beside this script, not under SANDBOX_HOME: a caller may point
 # SANDBOX_HOME at any instance root and sb must still find its own helper.
@@ -67,6 +70,7 @@ Underlying commands (full control):
   logs <name> [-f]      tail the instance's log
   env <name>            eval-able contract for sibling harnesses
   doctor                report readiness
+  version               print the sb version
   help                  this text
 
 Standard env: SANDBOX_HOME, SANDBOX_INSTANCES, SANDBOX_BASE_GAME,
@@ -1019,6 +1023,7 @@ main() {
       ;;
     logs) [[ $# -ge 1 ]] || die "usage: sb logs <name> [-f]"; cmd_logs "$1" "${2:-}" ;;
     env) [[ $# -ge 1 ]] || die "usage: sb env <name>"; cmd_env "$1" ;;
+    version|--version|-V) echo "sb $SB_VERSION" ;;
     help|-h|--help|"") usage ;;
     *) die "unknown command '$cmd' (see 'sb help')" ;;
   esac

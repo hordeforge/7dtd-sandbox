@@ -211,11 +211,15 @@ init (see README); use the native `sb run client` for reaching the menu.
 10. `sb run both <name>` uses `srv-<name>`/`client-<name>` instance names so
     one command yields one isolated server+client pair; `sb stop` on both
     names tears the pair down.
-11. **CI runs the same two targets you do.** `.github/workflows/ci.yml` is
+11. **One version home: `SB_VERSION` in `scripts/sb`**, printed by
+    `sb version`. Bump it, land that on main, then push the matching `vX.Y.Z`
+    tag; the release workflow refuses a tag that disagrees. Every release gets
+    a CHANGELOG entry.
+12. **CI runs the same two targets you do.** `.github/workflows/ci.yml` is
     `make lint` then `make test`, nothing inlined, so a gate added here runs
     on every push without touching the workflow. Every gate works against a
     temp `SANDBOX_HOME` with fake bases: no game, no Proton, no steamcmd.
-12. **No Python inside a shell script.** `sb` shells out to
+13. **No Python inside a shell script.** `sb` shells out to
     `scripts/sbconfig.py`; it carries no `python3 - <<EOF` heredoc, and the
     same rule holds in reverse. `make test` runs both gate kinds
     (`scripts/test_*.sh` and `scripts/test_*.py`) and `make lint` is
