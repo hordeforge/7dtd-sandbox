@@ -110,6 +110,7 @@ CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 | `sb list` / `sb status <name>` | instances and running state |
 | `sb logs <name> [-f]` | client or server log |
 | `sb env <name>` | eval-able contract for sibling harnesses |
+| `sb version` | the shipped version (canonical home: `SB_VERSION` in `scripts/sb`) |
 
 ## Driving an instance from a harness
 
