@@ -12,9 +12,19 @@
 # contains game files: a 20 GB base does not belong in an image, and the
 # depots are not ours to redistribute.
 #
-#   docker build -t 7dtd-safehouse:latest      --target runtime -f Dockerfile.safehouse .
-#   docker build -t 7dtd-safehouse:fetch       --target fetch   -f Dockerfile.safehouse .
+#   make docker            # runtime
+#   make docker-fetch      # fetch
 #   ./scripts/docker-gui.sh launch gamma
+#   make fetch-server-base-docker   # fetch a base into ./base as your own user
+#
+# Known limitation, measured on this host: steamcmd installs fine to a path
+# inside the container but fails on a bind-mounted one with "Failed to install
+# app ... (Missing configuration)" (identical image, user and command; only the
+# destination differs). So the fetch image cannot yet write a base straight
+# into a bind-mounted base/, and fetching stays a host job via tools/steamcmd.
+# The image is still the right place for steamcmd to live, and it does reach
+# Steam and download; do not put steamcmd back into the runtime image to work
+# around this.
 #
 # Bases are pinned by digest, not by a mutable tag, for the same reason the
 # workflows pin actions by commit SHA: a moved tag is unreviewed code.
@@ -26,19 +36,31 @@ FROM steamcmd/steamcmd@sha256:28633bf41a85592a50dc3aa2ca755be5510a4ba501bc34e287
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# sb looks for $SANDBOX_STEAMCMD/steamcmd.sh. The upstream image keeps it under
-# the steamcmd user's Steam tree; expose a stable path.
-RUN mkdir -p /opt/steamcmd \
-    && ln -sf /root/.local/share/Steam/steamcmd/steamcmd.sh /opt/steamcmd/steamcmd.sh \
-    && ln -sf /usr/bin/steamcmd /opt/steamcmd/steamcmd
+# sb runs `cd $SANDBOX_STEAMCMD && ./steamcmd.sh`, and steamcmd.sh resolves
+# linux32/steamcmd relative to its own directory, so the whole directory has to
+# be there (symlinking the script alone left it looking for
+# /opt/steamcmd/linux32/steamcmd and every fetch died with "Couldn't find
+# steamcmd").
+#
+# Symlinked, not copied. steamcmd resolves its Steam configuration from its
+# installation directory's parent (.../Steam/steamcmd -> .../Steam), which the
+# upstream image primed during build. Copying the program directory to /opt
+# orphaned it from that tree and every app_update failed with the unhelpful
+# "Failed to install app ... (Missing configuration)" after logging in fine.
+RUN ln -sfn /root/.local/share/Steam/steamcmd /opt/steamcmd
 
 COPY scripts/sb scripts/sbconfig.py /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/sb /usr/local/bin/sbconfig.py
 
 WORKDIR /sandbox
+# HOME is deliberately NOT overridden here. steamcmd keeps its Steam tree under
+# $HOME, and the upstream image primed /root/.local/share/Steam during build.
+# Pointing HOME at an empty directory gives steamcmd a fresh unprimed tree, and
+# every app_update then fails with "Failed to install app ... (Missing
+# configuration)" after logging in perfectly well. The runtime stage overrides
+# HOME because Proton needs a writable one; this stage must not.
 ENV SANDBOX_HOME=/sandbox \
-    SANDBOX_STEAMCMD=/opt/steamcmd \
-    HOME=/tmp/sb-home
+    SANDBOX_STEAMCMD=/opt/steamcmd
 ENTRYPOINT ["/usr/local/bin/sb"]
 CMD ["help"]
 
