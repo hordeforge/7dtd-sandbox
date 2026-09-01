@@ -15,7 +15,7 @@ die() { echo "docker-gui: $*" >&2; exit 1; }
 
 [[ -x "$STEAM_ROOT/$PROTON_REL" ]] || die "Proton not found at $STEAM_ROOT/$PROTON_REL"
 command -v docker >/dev/null || die "docker not on PATH"
-docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: docker build -t $IMAGE -f Dockerfile.safehouse ."
+docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: docker build --target runtime -t $IMAGE -f Dockerfile.safehouse ."
 
 # Allow local unix-socket X11 clients (container root talking to the host
 # display). Revoke later with: xhost -local:

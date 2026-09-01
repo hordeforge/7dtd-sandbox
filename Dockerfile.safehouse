@@ -1,16 +1,56 @@
-# 7dtd-client-sandbox runtime. Game trees stay on the host (bind-mounted);
-# this image is just steamcmd + the host libraries Proton/DXVK need to talk
-# to an AMD/Intel GPU and the host X11 socket.
+# Safehouse container images. Two targets, because provisioning and running are
+# different jobs with different dependencies:
 #
-#   docker build -t 7dtd-safehouse:latest -f Dockerfile.safehouse .
+#   fetch    steamcmd, for pulling the pristine bases into a bind-mounted
+#            base/ without installing steamcmd on the host.
+#   runtime  the client under Proton with the host's X11 socket and GPU.
+#            No steamcmd, no Steam: that is the whole product claim, and an
+#            image that ships a Steam provisioning toolchain it never invokes
+#            contradicts it while carrying the supply chain anyway.
+#
+# Game trees and instances always stay on the host (bind mounts). Neither image
+# contains game files: a 20 GB base does not belong in an image, and the
+# depots are not ours to redistribute.
+#
+#   docker build -t 7dtd-safehouse:latest      --target runtime -f Dockerfile.safehouse .
+#   docker build -t 7dtd-safehouse:fetch       --target fetch   -f Dockerfile.safehouse .
 #   ./scripts/docker-gui.sh launch gamma
-FROM steamcmd/steamcmd:latest
+#
+# Bases are pinned by digest, not by a mutable tag, for the same reason the
+# workflows pin actions by commit SHA: a moved tag is unreviewed code.
+
+# --- fetch: steamcmd only ---------------------------------------------------
+FROM steamcmd/steamcmd@sha256:28633bf41a85592a50dc3aa2ca755be5510a4ba501bc34e28705b00ce7979574 AS fetch
+
+# sb shells out to sbconfig.py; python3 is also what steamcmd's wrapper uses.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# sb looks for $SANDBOX_STEAMCMD/steamcmd.sh. The upstream image keeps it under
+# the steamcmd user's Steam tree; expose a stable path.
+RUN mkdir -p /opt/steamcmd \
+    && ln -sf /root/.local/share/Steam/steamcmd/steamcmd.sh /opt/steamcmd/steamcmd.sh \
+    && ln -sf /usr/bin/steamcmd /opt/steamcmd/steamcmd
+
+COPY scripts/sb scripts/sbconfig.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/sb /usr/local/bin/sbconfig.py
+
+WORKDIR /sandbox
+ENV SANDBOX_HOME=/sandbox \
+    SANDBOX_STEAMCMD=/opt/steamcmd \
+    HOME=/tmp/sb-home
+ENTRYPOINT ["/usr/local/bin/sb"]
+CMD ["help"]
+
+# --- runtime: the client, no steamcmd --------------------------------------
+FROM ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# steamcmd/steamcmd is Ubuntu 26.04. python3 is required because Proton's
-# launcher is a python3 script; the rest is what DXVK/wine need to open an
-# X11 window on /dev/dri (RADV on this host).
+# python3 runs Proton's launcher and sb's own sbconfig.py; the rest is what
+# DXVK/wine need to open an X11 window on /dev/dri (RADV on this host).
+# Proton itself comes from the host's Steam tree, bind-mounted read-only by
+# scripts/docker-gui.sh, so it is not installed here either.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         ca-certificates \
@@ -38,18 +78,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgnutls30t64 \
         && rm -rf /var/lib/apt/lists/*
 
-# sb looks for $SANDBOX_STEAMCMD/steamcmd.sh. The upstream image keeps it
-# under the steamcmd user's Steam tree; expose a stable path.
-RUN mkdir -p /opt/steamcmd \
-    && ln -sf /root/.local/share/Steam/steamcmd/steamcmd.sh /opt/steamcmd/steamcmd.sh \
-    && ln -sf /usr/bin/steamcmd /opt/steamcmd/steamcmd
-
-COPY scripts/sb /usr/local/bin/sb
-RUN chmod 0755 /usr/local/bin/sb
+COPY scripts/sb scripts/sbconfig.py /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/sb /usr/local/bin/sbconfig.py
 
 WORKDIR /sandbox
+# No SANDBOX_STEAMCMD: fetching is the `fetch` target's job, and sb refuses a
+# fetch here by name rather than failing somewhere inside a missing directory.
 ENV SANDBOX_HOME=/sandbox \
-    SANDBOX_STEAMCMD=/opt/steamcmd \
     STEAM_ROOT=/opt/steam \
     HOME=/tmp/sb-home
 
