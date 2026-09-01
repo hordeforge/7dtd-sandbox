@@ -8,6 +8,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SB="$ROOT/scripts/sb"
 
 fail=0
+expect_eq() { # expect_eq <desc> <got> <want>
+  if [[ "$2" != "$3" ]]; then
+    echo "FAIL: $1 (got '$2' want '$3')" >&2
+    fail=1
+  fi
+}
 check() { # check <desc> <expected-rc> <cmd...>
   local desc="$1" want="$2"; shift 2
   local rc=0
@@ -164,6 +170,15 @@ grep -q "RealEarth" <<<"$prune_out" \
 quiet_out="$(prune_instance_mods "$TMP/instances/pruneme")"
 [[ -z "$quiet_out" ]] \
   || { echo "FAIL: a clean instance still reported a prune: $quiet_out" >&2; fail=1; }
+
+# --- create-server declares its pair, not itself ---------------------------
+
+# cmd_create_server read "$@" for --admin extras without shifting the name off
+# it, so every server declared its own instance name as a Local admin.
+# shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
+source /dev/stdin <<<"$(sed -n '/^default_server_admins()/,/^}/p' "$SB")"
+expect_eq "pair name only" "$(default_server_admins srv-demo)" "client-demo"
+expect_eq "no pair for a bare name" "$(default_server_admins standalone)" ""
 
 # --- the window contract every launcher must honour -------------------------
 

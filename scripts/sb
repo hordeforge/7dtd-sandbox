@@ -377,7 +377,9 @@ default_server_admins() {
 }
 
 cmd_create_server() {
-  local name="$1"
+  # Shifted, so "$@" below is the --admin extras and not the instance name
+  # itself: without this the server declared its own name as a Local admin.
+  local name="$1"; shift || true
   validate_name "$name"
   [[ -d "$SERVER_BASE_GAME" && -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] \
     || die "server base missing at $SERVER_BASE_GAME (run 'sb fetch-server-base' first)"

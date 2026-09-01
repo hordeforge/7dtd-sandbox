@@ -33,20 +33,22 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
   gated.
 
 - `make fetch-server-base-docker` / `make fetch-base-docker` fetch a base
-  through the container into a **named volume**. steamcmd installs fine into a
-  Docker volume and fails on a bind mount with "Failed to install app ...
-  (Missing configuration)" (measured: same image, same user, same command, only
-  the destination differs), which is why the volume is not optional.
+  through the container straight into `./base`, so the host needs no steamcmd
+  at any point. The mount is a Docker local volume *bound to* that directory,
+  not a plain `-v host:path` bind mount: steamcmd fails on the latter with
+  "Failed to install app ... (Missing configuration)" and succeeds through the
+  former (measured: same image, same user, same command, only the mount
+  mechanism differs). The depot is chowned back to the invoking user, and
+  `sb create` then reflinks from it as usual (about a second for a 17 GB base).
   Credentials are never a build input, because `docker history` prints build
   args and ENV back out; the client fetch is interactive at run time and only
   the account name crosses, through the environment.
 
-### Known limitation
+### Fixed
 
-- A base fetched this way lives in the `7dtd-base` volume, not `./base`, so
-  host-side `sb create` cannot reflink from it yet. Either run the client
-  through the container too, or copy the volume out. Do not put steamcmd back
-  into the runtime image to work around this.
+- `sb create-server` declared its own instance name as a Local admin.
+  `cmd_create_server` read `"$@"` for `--admin` extras without shifting the
+  name off it first, so `srv-lab` seeded both `client-lab` and `srv-lab`.
 - `sb fetch-base` / `fetch-server-base` refuse by name when steamcmd is absent
   and point at the `fetch` image, instead of failing inside a `cd` to a
   directory that was never there.

@@ -190,10 +190,11 @@ make docker              # runtime image: client + GPU/X11, no steamcmd
 make docker-fetch        # provisioning image: steamcmd only
 ```
 
-Fetching runs in the `fetch` image, into a **named volume**. steamcmd installs
-fine into a Docker volume and fails on a bind mount with `Failed to install app
-'294420' (Missing configuration)` (measured on this host: same image, same
-user, same command, only the destination differs).
+Fetching runs in the `fetch` image, straight into `./base`. The mount is a
+Docker *local volume bound to that directory*, not a plain `-v host:path` bind
+mount: steamcmd fails on the latter with `Failed to install app '294420'
+(Missing configuration)` and succeeds through the former (measured on this
+host: same image, same user, same command, only the mount mechanism differs).
 
 ```bash
 make fetch-server-base-docker              # anonymous, no credentials
@@ -207,9 +208,9 @@ back out, so a credential baked into a layer is published with the image. The
 client fetch is interactive at run time; only the account name crosses, through
 the environment. See [SECURITY.md](SECURITY.md).
 
-The base then lives in the `7dtd-base` volume rather than `./base`, so
-host-side `sb create` cannot reflink from it yet. Either run the client through
-the container too, or copy the volume out to `./base`.
+The depot lands in `./base` owned by you, so `sb create` reflinks from it as
+usual: creating a server instance from a 17 GB base takes about a second. The
+host needs no steamcmd at any point.
 
 Two targets, because provisioning and running are different jobs:
 
