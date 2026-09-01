@@ -1,4 +1,4 @@
-# 🏠 Safehouse (7dtd-safehouse)
+# 🏠 Safehouse (`7dtd-sandbox/`)
 
 Standardized, Steam-free 7DTD **client and dedicated-server** instances for
 sibling harnesses. Each instance is a fresh, isolated copy of a pristine base
@@ -34,6 +34,10 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
   `platform=Local` and `crossplatform=None`: no Steam client process, no
   Steam auth ticket, no EOS crossplay, no Twitch. Verified: the client
   reaches the main menu with zero Steam processes running.
+- **Local clients are always admin.** `sb create-server` / `launch-server` /
+  `wipe` / `run both` seed `userdata/Saves/serveradmin.xml` with
+  `platform="Local"` `permission_level="0"` entries for every client instance
+  name (stock auth: PltfmId `Local_<playername>`).
 - **No Steam data-file verification.** `fetch-base` runs steamcmd without
   `-validate` (opt-in), and the sandbox refuses to live inside a `steamapps`
   tree, so Steam can never own or verify sandbox files.
@@ -47,18 +51,20 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
 ## Layout
 
 ```text
-7dtd-safehouse/
+7dtd-sandbox/
   base/game/            pristine Windows client base (steamcmd; never edit)
   base/server-game/     pristine Linux dedicated base (steamcmd, anonymous)
   instances/<name>/     one directory per instance
     game/               fresh COW copy of the base; apply mods here
     game/platform.cfg   Local platform / no EOS
     compatdata/         client: own Proton prefix
-    userdata/           server: own saves/worlds/logs
+    userdata/           server: own saves/worlds/logs (+ declared Local admins)
+    instance.props      server: the serverconfig properties declared for it
     logs/               host-side log dir
     instance.env        the standardized contract
   tools/steamcmd/       steam console client
   scripts/sb            the CLI
+  scripts/sbconfig.py   serverconfig render/get, admin seeding, port derivation
   scripts/docker-gui.sh containerized client with host X11/GPU forwarding
   Dockerfile.safehouse    steamcmd/steamcmd-based runtime image
 ```
@@ -76,7 +82,7 @@ STEAMCMD_USER=<steam-name> ./scripts/sb fetch-base
 ./scripts/sb run server srv-a
 
 # 3. Drive it from a sibling harness
-eval "$(/path/to/7dtd-safehouse/scripts/sb env client-demo)"
+eval "$(/path/to/7dtd-sandbox/scripts/sb env client-demo)"
 CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 
 # 4. Fresh state when done
@@ -92,15 +98,59 @@ CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 | `sb init` / `sb doctor` | detect Proton/steamcmd, report readiness |
 | `sb fetch-base [--validate \| --seed-from-steam]` | pull pristine client (Windows depot forced) |
 | `sb fetch-server-base [--validate]` | pull pristine dedicated server (anonymous OK) |
-| `sb create <name>` / `sb create-server <name>` | fresh client / server instance |
+| `sb create <name>` / `sb create-server <name> [--admin NAME...]` | fresh client / server instance (name-derived port block, declared admins) |
 | `sb launch <name> [-- args...]` | run client under Proton, no Steam |
 | `sb launch-server <name>` | run dedicated server |
+| `sb up <name> [--timeout N]` | start the server detached, block until its game port listens, print the contract |
+| `sb stage <name> <mod-dir>...` | copy built modlets into the instance's `Mods` |
+| `sb render-config <name> KEY=VALUE...` | declare serverconfig properties (config is rebuilt from the base template) |
 | `sb stop <name> [name...]` | stop only these instances' processes |
 | `sb wipe <name> [name...]` | reset game, Mods, saves/userdata to pristine |
 | `sb destroy <name> [name...]` | remove instances |
 | `sb list` / `sb status <name>` | instances and running state |
 | `sb logs <name> [-f]` | client or server log |
 | `sb env <name>` | eval-able contract for sibling harnesses |
+
+## Driving an instance from a harness
+
+`sb run server` blocks forever, which is right for a person and wrong for a
+test runner. `sb up` is the harness form: it starts the server in its own
+session, waits until the game port accepts connections, and exits non-zero
+with the log path when it does not.
+
+```bash
+./scripts/sb up srv-lab --timeout 240        # bring up (creates on first use)
+./scripts/sb stage srv-lab ../7dtd-playtest/dist/7dtd-playtest
+./scripts/sb render-config srv-lab GameWorld=Navezgane MaxSpawnedZombies=0
+eval "$(./scripts/sb env srv-lab)"           # SERVER_PORT, SERVER_TELNET_PORT, ...
+./scripts/sb stop srv-lab                    # teardown, this instance only
+```
+
+An instance is described, not accumulated. `instance.env` holds its identity,
+port block and admins; `instance.props` holds the serverconfig properties it
+was told to run with. Everything else is derived:
+
+- **The config is rebuilt from the base template on every launch**, so
+  undeclaring a property returns it to the stock value rather than leaving the
+  last run's setting behind.
+- **Ports come from the name**, not from creation order: `srv-lab` gets the
+  same 5-port block on any machine, so a recorded port reproduces elsewhere. A
+  block another instance holds is skipped deterministically. `ServerPort`,
+  `TelnetPort` and `UserDataFolder` belong to the instance and `render-config`
+  refuses them.
+- **Admins are declared** in `SERVER_ADMINS`, not discovered by scanning the
+  machine, so the same instance yields the same server on any host.
+
+`sb stop` matches processes by that instance's own `SB_INSTANCE`, so a harness
+never needs a `pkill` that would reach another instance's server. `sb wipe`
+clears the declared properties along with the save.
+
+`scripts/sbconfig.py` is the workspace's only serverconfig renderer and
+`serveradmin.xml` seeder. It rewrites active properties, leaves commented ones
+verbatim, inserts a property the template lacks, and escapes every value, so a
+quote in a world name cannot terminate the attribute and inject further
+properties. `7dtd-loadgen` calls it directly through `SANDBOX_ROOT`; only
+`7dtd-server-container` keeps its own (production boot, different template).
 
 ## Environment
 

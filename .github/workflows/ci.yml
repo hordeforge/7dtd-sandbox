@@ -1,0 +1,39 @@
+---
+name: ci
+
+on: [push, pull_request]
+
+# Least privilege: this job needs no token access.
+permissions:
+  contents: read
+
+# One run per ref, so an intermediate PR push does not keep burning runner
+# minutes behind its successors.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Bounds a hung step (the default is 6 hours). `make test` is pure shell
+    # and stdlib Python against temp dirs, so it finishes in seconds.
+    timeout-minutes: 10
+    steps:
+      # Pinned to the release commit, not the mutable v7 tag: a moved tag
+      # would otherwise run unreviewed code here with the workflow token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # `make lint` is bash -n plus shellcheck over every script; `make test`
+      # adds every scripts/test_*.sh and scripts/test_*.py. Running them
+      # through make instead of inlining keeps CI from drifting from dev.
+      #
+      # No game, no Proton and no steamcmd here: every gate works against a
+      # temp SANDBOX_HOME with fake bases, which is what keeps the instance
+      # contract (name-derived ports, declared admins, a serverconfig rebuilt
+      # from its base template) testable on a hosted runner at all.
+      - name: Lint shell (make lint)
+        run: make lint
+
+      - name: Gates (CLI surface, ports, admins, serverconfig, sbconfig)
+        run: make test

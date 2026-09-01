@@ -10,6 +10,8 @@ SB := $(ROOT)/scripts/sb
 SCRIPTS := scripts/sb scripts/docker-gui.sh $(sort $(wildcard scripts/test_*.sh))
 # Every CLI test suite; `test` runs them all.
 TESTS := $(sort $(wildcard scripts/test_*.sh))
+# Python gates (scripts/sbconfig.py and friends), run the same way.
+PYTESTS := $(sort $(wildcard scripts/test_*.py))
 
 .DEFAULT_GOAL := test
 .PHONY: help lint test doctor fetch-base fetch-server-base
@@ -17,7 +19,7 @@ TESTS := $(sort $(wildcard scripts/test_*.sh))
 
 help:
 	@echo "make lint    bash -n + shellcheck over every script"
-	@echo "make test    lint + every scripts/test_*.sh (no game needed)"
+	@echo "make test    lint + every scripts/test_*.{sh,py} (no game needed)"
 	@echo "make doctor  sb doctor (base/Proton/reflink readiness)"
 	@echo "sb help      full instance CLI"
 
@@ -27,6 +29,7 @@ lint:
 
 test: lint
 	set -e; for t in $(TESTS); do echo "== $$t"; bash $$t; done
+	set -e; for t in $(PYTESTS); do echo "== $$t"; python3 $$t; done
 
 # --- passthrough conveniences (full CLI: scripts/sb help) ------------------
 
