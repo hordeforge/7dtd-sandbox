@@ -19,15 +19,17 @@ PYTESTS := $(sort $(wildcard scripts/test_*.py))
 GENERATED := scripts/__pycache__ .scratch/shadercache
 DOCKER_IMAGE ?= 7dtd-safehouse:latest
 DOCKER_FETCH_IMAGE ?= 7dtd-safehouse:fetch
-# A named volume, not a bind mount: steamcmd installs fine into a Docker volume
-# and fails on a bind mount with "Failed to install app ... (Missing
-# configuration)" (measured on this host, same image, user and command; only
-# the destination differs).
+# A Docker local volume bound to this repo's base/, not a plain `-v host:path`
+# bind mount. steamcmd fails on the latter with "Failed to install app ...
+# (Missing configuration)" and succeeds through the former (measured on this
+# host: same image, same user, same command, only the mount mechanism differs).
+# Bound to base/ so the depot lands where sb create reflinks from, with no
+# 17 GB copy afterwards.
 BASE_VOLUME ?= 7dtd-base
 
 .DEFAULT_GOAL := help
 .PHONY: help check lint test coverage clean version doctor docker docker-fetch
-.PHONY: fetch-base-docker fetch-server-base-docker
+.PHONY: fetch-base-docker fetch-server-base-docker base-volume
 .PHONY: fetch-base fetch-server-base create create-server up stage render-config
 .PHONY: launch launch-server run stop wipe destroy list env
 
@@ -41,7 +43,7 @@ help:
 	@echo "  make version  the shipped version (SB_VERSION in scripts/sb)"
 	@echo "  make docker   build the runtime image (client + GPU/X11, no steamcmd)"
 	@echo "  make docker-fetch  build the provisioning image (steamcmd only)"
-	@echo "  make fetch-server-base-docker   pull the dedicated base into a volume"
+	@echo "  make fetch-server-base-docker   pull the dedicated base into ./base"
 	@echo "  make fetch-base-docker          pull the client base (STEAMCMD_USER, interactive)"
 	@echo "  make doctor   sb doctor (base / Proton / reflink readiness)"
 	@echo
@@ -100,19 +102,32 @@ docker-fetch:
 # Steam Guard code, and neither is ever passed on a command line, where the
 # process table would expose it. Only the account name crosses, through the
 # environment.
-fetch-server-base-docker: docker-fetch
-	docker volume create $(BASE_VOLUME) >/dev/null
-	docker run --rm -v $(BASE_VOLUME):/sandbox/base $(DOCKER_FETCH_IMAGE) fetch-server-base
+# Recreated each time so the binding always points at this checkout's base/.
+base-volume:
+	@mkdir -p "$(ROOT)/base"
+	@docker volume rm -f $(BASE_VOLUME) >/dev/null 2>&1 || true
+	@docker volume create --driver local \
+		--opt type=none --opt device="$(ROOT)/base" --opt o=bind \
+		$(BASE_VOLUME) >/dev/null
 
-fetch-base-docker: docker-fetch
+# steamcmd runs as root in the container, so the depot it writes into base/ is
+# chowned back to the invoking user: a root-owned base/ is one its owner can
+# neither wipe nor re-fetch.
+CHOWN_BASE = docker run --rm -v $(BASE_VOLUME):/sandbox/base \
+	--entrypoint chown $(DOCKER_FETCH_IMAGE) -R "$$(id -u):$$(id -g)" /sandbox/base
+
+fetch-server-base-docker: docker-fetch base-volume
+	docker run --rm -v $(BASE_VOLUME):/sandbox/base $(DOCKER_FETCH_IMAGE) fetch-server-base
+	$(CHOWN_BASE)
+
+fetch-base-docker: docker-fetch base-volume
 	@test -n "$${STEAMCMD_USER:-}" || { \
 		echo "export STEAMCMD_USER first: app 251570 needs a Steam account that owns the game" >&2; \
 		echo "leave STEAMCMD_PASS unset and type the password at the prompt" >&2; \
 		exit 2; }
-	docker volume create $(BASE_VOLUME) >/dev/null
-	docker run --rm -it -e STEAMCMD_USER $(BASE_VOLUME_MOUNT) $(DOCKER_FETCH_IMAGE) fetch-base
-
-BASE_VOLUME_MOUNT = -v $(BASE_VOLUME):/sandbox/base
+	docker run --rm -it -e STEAMCMD_USER -v $(BASE_VOLUME):/sandbox/base \
+		$(DOCKER_FETCH_IMAGE) fetch-base
+	$(CHOWN_BASE)
 
 # --- passthrough conveniences (full CLI: scripts/sb help) ------------------
 

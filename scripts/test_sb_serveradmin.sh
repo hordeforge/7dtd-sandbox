@@ -120,6 +120,9 @@ import re, sys
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 checks = [
     ("cmd_create_server", "seed_sandbox_admins"),
+    # The name must be shifted off "$@" before --admin extras are read, or the
+    # server declares its own instance name as a Local admin.
+    ("cmd_create_server", 'local name="$1"; shift'),
     ("cmd_launch_server", "seed_sandbox_admins"),
     ("cmd_wipe", "seed_sandbox_admins"),
     # `sb up` and `sb run both` both seed through start_server_detached.
