@@ -205,11 +205,21 @@ source /path/to/7dtd-sandbox/instances/<name>/instance.env
 | `SERVER_ADMINS` | comma-separated Local player names admitted at level 0 |
 | `LOGFILE` | host path of the client log |
 | `SANDBOX_NAME` | instance id |
-| `SB_RES` / `SB_FULLSCREEN` | windowed resolution (`1280x720`) / windowed (`0`) launch defaults |
+| `SB_RES` / `SB_FULLSCREEN` | windowed resolution (`1280x720`) / windowed (`0`) |
+| `SB_SCREEN_ARGS` | the resolved `-screen-*` arguments every launcher passes |
 
-Sandbox client launches are windowed at `SB_RES` (default `1280x720`) unless
-`SB_FULLSCREEN=1`; callers that pass their own `-screen-*` args override the
-default.
+**A sandbox client always starts windowed at `SB_RES` (default `1280x720`).**
+It is a test fixture, not a game session: it must never take the display
+fullscreen, and several instances have to be visible at once. `sb env` exports
+the resolved arguments as `SB_SCREEN_ARGS`, and every launcher passes them, so
+a client started through `7dtd-fastconnect`'s `launch_client.sh` (the path
+`7dtd-playtest` uses) gets the same window as one started by `sb launch`. The
+command line wins over whatever the Proton prefix last saved, which is why
+this is passed at every launch rather than seeded once into the prefix.
+
+`SB_FULLSCREEN=1` opts out, and a caller passing its own `-screen-*` arguments
+to `sb launch` overrides the default. A malformed `SB_RES` or `SB_FULLSCREEN`
+is a refusal, not a silent fallback to no window arguments.
 
 ## Docker GUI (optional)
 
