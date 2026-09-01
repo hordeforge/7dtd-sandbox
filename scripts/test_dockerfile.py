@@ -93,7 +93,26 @@ def test_fetch_has_steamcmd_at_the_path_sb_expects() -> None:
     assert "SANDBOX_STEAMCMD=/opt/steamcmd" in body, (
         "sb looks for $SANDBOX_STEAMCMD/steamcmd.sh; expose the stable path"
     )
-    assert "/opt/steamcmd/steamcmd.sh" in body, "the stable path must be linked"
+    # The whole directory, not the script alone. steamcmd.sh resolves
+    # linux32/steamcmd relative to itself, so a lone script symlink sent every
+    # fetch to /opt/steamcmd/linux32/steamcmd and died with "Couldn't find
+    # steamcmd" before contacting Steam at all.
+    # Symlink the directory, never copy it and never link the script alone.
+    # steamcmd.sh resolves linux32/steamcmd beside itself, and steamcmd resolves
+    # its Steam configuration from the install directory's parent; a copy to
+    # /opt orphans it from the primed tree and every app_update then fails with
+    # "Missing configuration" after logging in fine.
+    assert "ln -sfn /root/.local/share/Steam/steamcmd /opt/steamcmd" in body, (
+        "symlink the steamcmd directory in place; do not copy or relocate it"
+    )
+    # steamcmd's Steam tree lives under $HOME and the upstream image primed
+    # /root/.local/share/Steam at build time. Overriding HOME to an empty
+    # directory hands it a fresh unprimed tree, and every app_update then fails
+    # with "Missing configuration" after a clean login.
+    assert not re.search(r"(?<![A-Z_])HOME=", body), (
+        "the fetch stage must not override HOME: steamcmd needs the Steam tree "
+        "the base image primed under /root (SANDBOX_HOME is a different name)"
+    )
     print("PASS fetch_has_steamcmd_at_the_path_sb_expects")
 
 
@@ -112,14 +131,14 @@ def test_both_images_ship_the_config_helper() -> None:
 def test_no_game_files_are_baked_in() -> None:
     """Game trees stay on the host: a 20 GB base does not belong in an image,
     and the depots are not ours to redistribute."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    for line in text.splitlines():
+    body = directives(DOCKERFILE.read_text(encoding="utf-8"))
+    for line in body.splitlines():
         stripped = line.strip()
         if not stripped.upper().startswith(("COPY", "ADD")):
             continue
-        for forbidden in ("base/", "instances/", "app_update"):
+        for forbidden in ("base/", "instances/"):
             assert forbidden not in stripped, f"{stripped!r} bakes game data into the image"
-    assert "app_update" not in text, "no image builds by downloading a depot"
+    assert "app_update" not in body, "no image builds by downloading a depot"
     print("PASS no_game_files_are_baked_in")
 
 

@@ -24,6 +24,22 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 - Both images ship `sbconfig.py`, not just `sb`. Every serverconfig render,
   admin seed and port derivation shells out to it, so the previous image had a
   CLI whose `create`/`up`/`render-config`/`wipe` verbs all failed.
+- Two bugs in the old image, found by running it instead of building it:
+  `/opt/steamcmd/steamcmd.sh` was a symlink to the script alone, so steamcmd
+  looked for `linux32/steamcmd` beside it and every fetch died with "Couldn't
+  find steamcmd" before contacting Steam. And overriding `HOME` in the fetch
+  stage hands steamcmd a fresh unprimed Steam tree, which fails every
+  `app_update` with "Missing configuration" after a clean login. Both are
+  gated.
+
+### Known limitation
+
+- The `fetch` image reaches Steam and downloads, but cannot install into a
+  **bind-mounted** `base/` on this host: identical image, user and command
+  succeed to a container-local path and fail on the bind mount with "Failed to
+  install app '294420' (Missing configuration)". Fetching therefore remains a
+  host job through `tools/steamcmd`, and `tools/steamcmd` stays. Do not put
+  steamcmd back into the runtime image to work around this.
 - `sb fetch-base` / `fetch-server-base` refuse by name when steamcmd is absent
   and point at the `fetch` image, instead of failing inside a `cd` to a
   directory that was never there.

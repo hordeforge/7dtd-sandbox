@@ -190,6 +190,12 @@ make docker              # runtime image: client + GPU/X11, no steamcmd
 make docker-fetch        # provisioning image: steamcmd only
 ```
 
+Fetching a base still runs on the host (`tools/steamcmd`). The `fetch` image
+reaches Steam and downloads, but on this host steamcmd cannot install into a
+bind-mounted `base/`: the identical image, user and command succeed to a
+container-local path and fail on the bind mount with `Failed to install app
+'294420' (Missing configuration)`.
+
 Two targets, because provisioning and running are different jobs:
 
 | Target | Base | For |
