@@ -295,10 +295,23 @@ client hangs during early Unity init (see README); use the native
    sibling ecosystem targets the Windows build under Proton. Steam
    data-file verification is off by default (`--validate` to opt in). The
    dedicated server base is the native Linux depot (anonymous pull works).
-9. **No-Steam boot is verified** (2026-08-30): the client reaches the main
-   menu with zero Steam processes; `Steamworks is not initialized` in the log
-   is expected and non-fatal in Local mode. Do not regress this by adding
-   Steam auth, Steam runtime hooks, or `-applaunch` back into the launch path.
+9. **The whole chain is verified live** (2026-09-02, graded *executed*): a base
+   pulled through the `fetch` image with no host steamcmd, reflinked into an
+   instance pair, brought up with `sb up`, driven by a real client through
+   7dtd-playtest, asserted and torn down by instance. `SUMMARY pass=5 fail=0
+   skip=0 wall_s=92.2` on the smoke suite, ports 27535/27536 (the block
+   `srv-playtest` derives), lock `playtest_running-client-playtest`.
+
+   No-Steam boot is part of that: the client reaches the world with zero Steam
+   processes; `Steamworks is not initialized` in the log is expected and
+   non-fatal in Local mode. Do not regress it by adding Steam auth, Steam
+   runtime hooks, or `-applaunch` back into the launch path.
+
+   A pristine base is load-bearing for this, not cosmetic. A client base that
+   carried a terrain mod made the client fail to deserialize the server's first
+   world package and get kicked, roughly forty seconds in, with nothing naming
+   the cause. Pruning instance mods was not enough; the depot itself has to be
+   clean, which is what `sb doctor`'s base-mods report is for.
 10. `sb run both <name>` uses `srv-<name>`/`client-<name>` instance names so
     one command yields one isolated server+client pair; `sb stop` on both
     names tears the pair down.

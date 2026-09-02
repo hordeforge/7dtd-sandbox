@@ -9,6 +9,21 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ## [Unreleased]
 
+### Verified
+
+- The full chain runs end to end (2026-09-02, graded *executed* per
+  hordeforge/.github `REPOSITORY_STANDARDS.md` §9): a base pulled through the
+  `fetch` image with no host steamcmd, reflinked into an instance pair, brought
+  up with `sb up`, driven by a real client through 7dtd-playtest, asserted and
+  torn down by instance. `SUMMARY pass=5 fail=0 skip=0 wall_s=92.2` on the
+  smoke suite.
+- A contaminated client base was the cause of the client/server desync that
+  had blocked every earlier live attempt (`NCSimple_Deserializer (ch=1):
+  Attempted to read past the end of the stream`, then a kick, about forty
+  seconds after joining). Pruning instance mods did not fix it; re-fetching a
+  pristine depot did. `sb doctor`'s base-mods report exists to catch this
+  before it costs a run.
+
 ### Added
 
 - **`Dockerfile.safehouse` splits into `fetch` and `runtime` targets.** The
