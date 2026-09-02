@@ -9,6 +9,11 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-02
+
+The instance contract becomes fully declarative, the container images split by
+job, and the whole chain is verified running rather than building.
+
 ### Verified
 
 - The full chain runs end to end (2026-09-02, graded *executed* per
@@ -205,5 +210,6 @@ everything a test needs to exist before a suite can run.
 - Instances created before this release keep the ports recorded in their
   `instance.env`; only new instances get a name-derived block.
 
-[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.1.0
