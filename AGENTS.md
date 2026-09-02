@@ -307,6 +307,18 @@ client hangs during early Unity init (see README); use the native
    non-fatal in Local mode. Do not regress it by adding Steam auth, Steam
    runtime hooks, or `-applaunch` back into the launch path.
 
+   **Instances run in parallel** (verified the same day, also *executed*): two
+   full suites at once on `par-a` and `par-b`, both `pass=5 fail=0`, on their
+   own name-derived port blocks (27170/27171 and 27575/27576), their own lock
+   files, and two windowed clients sharing the display. Neither refused nor
+   killed the other. Wall clock was 155s and 150s against 92s solo, so GPU
+   contention is the limit rather than any lock.
+
+   That property rests on four things holding together, and breaking any one
+   re-serialises the lab: name-derived ports, a per-client-instance lock file,
+   a probe scoped to a prefix's own `STEAM_COMPAT_DATA_PATH`, and no pattern
+   `pkill` anywhere on the managed path.
+
    A pristine base is load-bearing for this, not cosmetic. A client base that
    carried a terrain mod made the client fail to deserialize the server's first
    world package and get kicked, roughly forty seconds in, with nothing naming
