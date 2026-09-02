@@ -22,7 +22,7 @@ STEAM_APPID="${STEAM_APPID:-251570}"
 SERVER_APPID="${SERVER_APPID:-294420}"
 # Canonical version home for this repository (REPOSITORY_STANDARDS.md §8).
 # The release workflow refuses a vX.Y.Z tag that disagrees with it.
-SB_VERSION="0.1.0"
+SB_VERSION="0.2.0"
 STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
 # Beside this script, not under SANDBOX_HOME: a caller may point
 # SANDBOX_HOME at any instance root and sb must still find its own helper.
