@@ -17,6 +17,12 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
   up with `sb up`, driven by a real client through 7dtd-playtest, asserted and
   torn down by instance. `SUMMARY pass=5 fail=0 skip=0 wall_s=92.2` on the
   smoke suite.
+- Instances run in parallel: two full suites at once on separate pairs, both
+  `pass=5 fail=0`, on their own name-derived port blocks and lock files, with
+  two windowed clients sharing the display. 155s and 150s against 92s solo, so
+  GPU contention is the limit rather than any lock. The property needs all four
+  of: name-derived ports, a per-client-instance lock, a prefix-scoped probe,
+  and no pattern `pkill` on the managed path.
 - A contaminated client base was the cause of the client/server desync that
   had blocked every earlier live attempt (`NCSimple_Deserializer (ch=1):
   Attempted to read past the end of the stream`, then a kick, about forty
