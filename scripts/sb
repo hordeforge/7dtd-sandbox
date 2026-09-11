@@ -449,7 +449,7 @@ cmd_launch_server() {
   echo "log:       $inst/logs/server.log"
   cd "$game"
   exec env SB_INSTANCE="$inst" \
-    LD_LIBRARY_PATH="$(collect_mods_native_path "$inst")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    LD_LIBRARY_PATH="$(collect_mods_native_path "$game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     ./7DaysToDieServer.x86_64 -configfile="$cfg" -logfile "$inst/logs/server.log" \
     -dedicated -nographics -batchmode "$@"
 }
@@ -461,7 +461,7 @@ cmd_launch_server() {
 # staged modlet's Native dir to LD_LIBRARY_PATH before exec. Derived from the
 # instance's own Mods tree, never the caller's environment.
 collect_mods_native_path() {
-  local inst="$1" mods="$1/game/Mods" entry out=""
+  local mods="$1/Mods" entry out=""
   [[ -d "$mods" ]] || return 0
   for entry in "$mods"/*/Native; do
     [[ -d "$entry" ]] || continue
@@ -987,7 +987,7 @@ start_server_detached() {
   # this because it execs the client over itself straight afterwards.
   ( cd "$inst/game" \
     && exec setsid --fork env SB_INSTANCE="$inst" \
-         LD_LIBRARY_PATH="$(collect_mods_native_path "$inst")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+         LD_LIBRARY_PATH="$(collect_mods_native_path "$inst/game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
          ./7DaysToDieServer.x86_64 \
            -configfile="$cfg" -logfile "$inst/logs/server.log" \
            -dedicated -nographics -batchmode \
