@@ -9,6 +9,17 @@ it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-11
+
+### Added
+
+- Every server bring-up prepends each staged modlet's `Native` directory to
+  `LD_LIBRARY_PATH` before exec. The Mono resolver only sees the loader search
+  path captured at process start, so a modlet shipping a native library there
+  (the 7dtd-wasm bridge ships `libwasmtime.so`) was never found. The path is
+  derived from the instance's own `Mods` tree, never from the caller's
+  environment.
+
 ## [0.2.0] - 2026-09-02
 
 The instance contract becomes fully declarative, the container images split by
@@ -210,6 +221,7 @@ everything a test needs to exist before a suite can run.
 - Instances created before this release keep the ports recorded in their
   `instance.env`; only new instances get a name-derived block.
 
-[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.1.0
