@@ -448,8 +448,26 @@ cmd_launch_server() {
   echo "userdata:  $inst/userdata"
   echo "log:       $inst/logs/server.log"
   cd "$game"
-  exec env SB_INSTANCE="$inst" ./7DaysToDieServer.x86_64 -configfile="$cfg" -logfile "$inst/logs/server.log" \
+  exec env SB_INSTANCE="$inst" \
+    LD_LIBRARY_PATH="$(collect_mods_native_path "$game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    ./7DaysToDieServer.x86_64 -configfile="$cfg" -logfile "$inst/logs/server.log" \
     -dedicated -nographics -batchmode "$@"
+}
+
+
+# Native libraries shipped inside modlets (<mod>/Native, the 7dtd-wasm bridge
+# ships libwasmtime.so there). The Mono resolver only sees the loader search
+# path captured at process start, so every server bring-up prepends each
+# staged modlet's Native dir to LD_LIBRARY_PATH before exec. Derived from the
+# instance's own Mods tree, never the caller's environment.
+collect_mods_native_path() {
+  local mods="$1/Mods" entry out=""
+  [[ -d "$mods" ]] || return 0
+  for entry in "$mods"/*/Native; do
+    [[ -d "$entry" ]] || continue
+    if [[ -z "$out" ]]; then out="$entry"; else out="$out:$entry"; fi
+  done
+  printf '%s' "$out"
 }
 
 # Properties an instance owns. A caller may not declare these: the instance
@@ -969,6 +987,7 @@ start_server_detached() {
   # this because it execs the client over itself straight afterwards.
   ( cd "$inst/game" \
     && exec setsid --fork env SB_INSTANCE="$inst" \
+         LD_LIBRARY_PATH="$(collect_mods_native_path "$inst/game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
          ./7DaysToDieServer.x86_64 \
            -configfile="$cfg" -logfile "$inst/logs/server.log" \
            -dedicated -nographics -batchmode \
