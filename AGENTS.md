@@ -448,7 +448,12 @@ client hangs during early Unity init (see README); use the native
     section, or one still empty because the notes sit under `[Unreleased]`.
     Every release gets a CHANGELOG entry, written as part of the same commit
     as the bump. `scripts/test_sb_release.sh` holds the same structural rules
-    on every push.
+    on every push. A change to something a consumer resolves (a `sb` verb's
+    exit code or output, a `sbconfig.py` option, the `instance.env` format,
+    the interpreter floor) goes under `### Changed` with the before, the after
+    and the migration, never under `### Fixed`, and the defect behind it gets
+    its own `### Fixed` entry. A minor carries those changes, so a harness on a
+    minor has to read the section before upgrading.
 12. **CI runs the same two targets you do.** `.github/workflows/ci.yml` is
     `make check` (which is `make lint`) then `make test`, nothing inlined, so
     a gate added here runs on every push without touching the workflow. Every

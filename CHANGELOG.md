@@ -17,6 +17,14 @@ than scanned, ports derived rather than recorded, a client window that follows
 the instance rather than the environment) as a minor bump. So a minor is not a
 safe upgrade for a harness that depends on behaviour, and a patch is.
 
+**Grouping.** An entry belongs under `Changed` rather than `Fixed` when it
+moves something a consumer resolves: a `sb` verb's exit code or output, a
+`sbconfig.py` option, the `instance.env` format, the interpreter floor. The
+defect behind such a change is written out under `Fixed` in its own right, so
+both are on record. 0.2.0 shipped its client-window change under `Fixed` and
+had to be relabelled after the fact; the rule is here so the next one does not
+need the same repair.
+
 **Deprecation.** There is no deprecation schedule and no support window. The
 `sb` verbs a sibling harness calls are the public surface; a verb that goes away
 goes away in a release, and its section below is where a caller reads it.
@@ -134,14 +142,6 @@ Nothing is deprecated ahead of removal in this repository today.
   does. Teardown is re-run after a failed pass, and the refusal (exit 2,
   "instance not found") also stopped `sb destroy a b` at the first name that
   was gone, leaving the rest of the list standing.
-- `instance.env` is written with its values quoted (`KEY='value'`), the same
-  shape `sb env` prints. Both documented consumers parse that file with a
-  shell, and a bare value is a value the consumer re-splits: the stock
-  `Proton - Experimental` path assigned the prefix and then ran `-` as a
-  command, so `source instances/<name>/instance.env` failed on the default
-  install, and a path carrying a newline wrote a second line the sourcing shell
-  executed. `env_value` takes the quotes back off, so a hand-edited bare value
-  still reads.
 - `sbconfig.py` refuses a `serveradmin.xml` carrying a DTD rather than parsing
   it. Expat expands internal general entities while it parses, so a nested
   entity definition in a hand-editable file cost exponential time in a check
@@ -224,12 +224,6 @@ Nothing is deprecated ahead of removal in this repository today.
   a `note:` line naming neither what did not run nor how to get the tool. It
   now prints a warning per missing tool, the install line, and the fact that
   CI refuses to run without it, so a half-run check cannot read as a green one.
-- `sbconfig.py seed-admins` takes the declared Local admin names on stdin, one
-  per line, instead of as `--name` arguments. An argument is readable through
-  `/proc/<pid>/cmdline` by every account on the host for as long as the process
-  lives, so the seeding path published the player names a server admits. The
-  option is refused rather than ignored, so a caller still passing it fails
-  loudly instead of seeding nothing.
 - The per-instance process scan read every `/proc/<pid>/environ` through a
   `tr | grep` pair, forking twice per process on the host. On a busy machine a
   `sb up --timeout 3` whose server never bound took over 30s to fail, so
@@ -417,7 +411,8 @@ Nothing is deprecated ahead of removal in this repository today.
   temp file with `Path.unlink(missing_ok=...)`, which is 3.8, so on 3.7 the
   write-error path raised `TypeError` instead of the `RuntimeError` that names
   the file. `SB_PY_MIN` in `sb`, `MIN_PYTHON` in `sbconfig.py` and the README
-  all move together.
+  all move together. The raise itself is a contract change and is written out
+  under `Changed`.
 
 ### Documentation
 
@@ -452,6 +447,33 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Changed
 
+- The interpreter floor moved from 3.7 to 3.8. Before, a 3.7 host ran
+  `sbconfig.py`; after, it is refused by name, by `sb` before it runs anything
+  and by `sbconfig.py` at its own entry point. The reason it moved is under
+  `Fixed`: `_atomic_write` needs `Path.unlink(missing_ok=...)`, which is 3.8.
+  A host on 3.7 upgrades the interpreter; nothing else about its instances
+  changes. `SB_PY_MIN` in `sb`, `MIN_PYTHON` in `sbconfig.py` and the README
+  moved with it, and `scripts/test_sb_cli.sh` holds the two declarations to
+  one number.
+- `sbconfig.py seed-admins USERDATA` reads the declared Local admin names from
+  stdin, one per line, and the `--name` spelling is refused (exit 2). Before:
+  `sbconfig.py seed-admins USERDATA --name alice --name bob`. After:
+  `printf 'alice\nbob\n' | sbconfig.py seed-admins USERDATA`. This is a
+  sibling-facing entry point (`docs/THREAT_MODEL.md` names it as one), so a
+  harness calling it directly has to change its call. An argument is readable
+  through `/proc/<pid>/cmdline` by every account on the host for as long as the
+  process lives, so the seeding path published the player names a server
+  admits. The refusal is deliberate: a caller still passing `--name` fails
+  loudly instead of seeding nothing.
+- `instance.env` is written with its values quoted (`KEY='value'`), the shape
+  `sb env` already printed. Both documented consumers resolve that file with a
+  shell (`eval "$(sb env <name>)"`, `source instances/<name>/instance.env`), so
+  neither is affected, and `sb` reads a hand-edited bare value back
+  (`env_value` takes the quotes off). A harness that parses the file with its
+  own line splitter has to strip the quotes. A bare value is a value that
+  consumer re-splits: the stock `Proton - Experimental` path assigned the
+  prefix and then ran `-` as a command, and a path carrying a newline wrote a
+  second line the sourcing shell executed.
 - The process scan behind `sb list`, `sb status`, `sb stop`, `sb wipe` and
   `sb destroy` reads every `/proc/<pid>/environ` in one `grep -z` pass instead
   of a `tr | grep` pair per process, and `sb list` asks for every instance's

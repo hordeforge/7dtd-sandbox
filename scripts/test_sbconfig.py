@@ -659,7 +659,7 @@ def test_seed_refuses_non_utf8_declared_names(tmp: Path) -> None:
     finally:
         sys.stdin.close()
         sys.stdin = saved
-    assert rc == 1, f"an undecodable declaration must fail, got {rc}"
+    assert rc == EXIT_FAILED, f"an undecodable declaration must fail, got {rc}"
     assert "not valid UTF-8" in err.getvalue(), err.getvalue()
     assert not (ud / "Saves" / "serveradmin.xml").exists(), "a refused seed wrote a file"
     print("PASS seed_refuses_non_utf8_declared_names")
