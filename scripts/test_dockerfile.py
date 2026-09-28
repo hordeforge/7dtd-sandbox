@@ -177,8 +177,9 @@ def test_docker_gui_names_its_host_requirements() -> None:
     checked (and named in the message) before the container starts.
     """
     text = DOCKER_GUI.read_text(encoding="utf-8")
-    # The X11 socket path is a string this gate looks for in docker-gui.sh,
-    # not a temporary file this test creates.
+    # The X11 socket directory is the one host path under /tmp this tree names:
+    # it is where the X server listens, not a scratch file of ours, which is
+    # what the S108 suppression on the tuple below is about.
     for required in ("uname -s", "/dev/dri", "/tmp/.X11-unix", "DISPLAY"):  # noqa: S108
         assert required in text, f"docker-gui.sh does not check {required}"
     print("PASS docker_gui_names_its_host_requirements")
@@ -212,13 +213,13 @@ def test_image_version_is_derived_from_sb_version() -> None:
     that misses one, and the drift is invisible: the image still builds.
     """
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert re.search(r"^ARG SB_VERSION=0\.0\.0-unset$", text, re.M), (
+    assert re.search(r"^ARG SB_VERSION=0\.0\.0-unset$", text, re.MULTILINE), (
         "the Dockerfile needs a global ARG SB_VERSION, defaulted to a value "
         "that cannot pass for a release"
     )
     for name in ("fetch", "runtime"):
         body = directives(stage_body(name))
-        assert re.search(r"^ARG SB_VERSION$", body, re.M), (
+        assert re.search(r"^ARG SB_VERSION$", body, re.MULTILINE), (
             f"stage {name} must redeclare ARG SB_VERSION to use it in a LABEL"
         )
         assert 'org.opencontainers.image.version="${SB_VERSION}"' in body, (
@@ -231,7 +232,7 @@ def test_image_version_is_derived_from_sb_version() -> None:
     )
     for target, stage in (("docker", "runtime"), ("docker-fetch", "fetch")):
         pattern = rf"^{target}:\n\tdocker build --target {stage} \$\(SB_VERSION_ARG\) "
-        assert re.search(pattern, makefile, re.M), (
+        assert re.search(pattern, makefile, re.MULTILINE), (
             f"the {target} target must pass $(SB_VERSION_ARG)"
         )
     print("PASS image_version_is_derived_from_sb_version")
@@ -247,7 +248,7 @@ def test_runtime_is_not_root_and_fetch_stays_root() -> None:
     chown`, which a non-root user cannot do.
     """
     runtime = directives(stage_body("runtime"))
-    assert re.search(r"^USER 1000:1000$", runtime, re.M), (
+    assert re.search(r"^USER 1000:1000$", runtime, re.MULTILINE), (
         "the runtime image must not default to root: sb needs no privilege, and "
         "scripts/docker-gui.sh already pins --user to the caller"
     )
@@ -256,7 +257,7 @@ def test_runtime_is_not_root_and_fetch_stays_root() -> None:
         "`sb create` works in a plain `docker run -v` with no --user"
     )
     fetch = directives(stage_body("fetch"))
-    assert not re.search(r"^USER ", fetch, re.M), (
+    assert not re.search(r"^USER ", fetch, re.MULTILINE), (
         "the fetch image must stay root: steamcmd writes into the tree the base "
         "image primed under /root, and the chown of base/ back to the caller "
         "needs it"

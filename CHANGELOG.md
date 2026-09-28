@@ -31,6 +31,11 @@ Nothing is deprecated ahead of removal in this repository today.
   `SERVER_ADMINS`, so a 022 umask left every Local player name the instance
   admits readable to every account on the host. The mode is applied on every
   server bring-up, so an instance created before this is restricted too.
+- The three names `sbconfig.py` seeds on every server besides the declared
+  ones (`Player`, `client`, `admin`) are documented: in the module docstring,
+  in the `seed-admins` help, in README and in AGENTS.md rule 5. They were the
+  one set of level-0 Local admins that no document said were unconditional, so
+  "admins are declared, not discovered" read as complete when it was not.
 - `scripts/test_sb_release.sh` gates the release contract on every push, so a
   version that is bumped without notes is caught here rather than by the tag:
   `SB_VERSION` must be `MAJOR.MINOR.PATCH`, must have a dated section in this
@@ -81,6 +86,11 @@ Nothing is deprecated ahead of removal in this repository today.
   `scripts/test_sb_up.py` failed a bring-up that was honouring its timeout. The
   environment is read in-process now, on a whole entry, so a value holding the
   marker inside another one still cannot match.
+- `scripts/test_sb_serverconfig.sh` declared `Game.World=dot` to prove the
+  property upsert matched a key literally. `validate_prop` refuses any key
+  outside `[A-Za-z_][A-Za-z0-9_]*` first, so the gate died on its own setup
+  line. It now proves the same defect is unreachable through a key that is
+  legal, and that the upsert spares the neighbouring declaration.
 - A `sb up` (or `sb run both`) that times out waiting for the game port stops
   the server it started. That server was already detached and already holding
   its port block, so a harness retrying against a wedged instance left another
@@ -158,9 +168,10 @@ Nothing is deprecated ahead of removal in this repository today.
   `instance.env` raw. Its documented consumer is `eval "$(sb env <name>)"`, so
   a declared value carrying a quote (an admin name, a path) closed the string
   and ran the rest of the line in the caller's shell.
-- `sb render-config` refuses a property name outside `[A-Za-z][A-Za-z0-9_]*`
-  and a value carrying a newline. The name is a regex in the upsert that
-  rewrites an existing property and a line prefix in `instance.props`.
+- `sb render-config` refuses a property name outside `[A-Za-z_][A-Za-z0-9_]*`
+  and a value carrying a newline. The name reaches the upsert that rewrites an
+  existing property and a line prefix in `instance.props`, where a regex
+  metacharacter would have matched and dropped a neighbour's declaration.
 - `serveradmin.xml` is written `0600` on creation and after every rewrite, like
   the rendered serverconfig. A temp-and-replace that left the file at the
   umask's mode widened a permission_level=0 list to every local user.
@@ -235,6 +246,29 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Documentation
 
+- `sb help` documented the property-key charset as `[A-Za-z][A-Za-z0-9_]*`
+  while `validate_prop` accepts a leading underscore. The help text, README and
+  AGENTS.md now name the charset the code enforces.
+- `Dockerfile.safehouse` still said a base could not be fetched into a
+  bind-mounted `base/` and that fetching stayed a host job. The bind mount
+  became a Docker local volume bound to `base/` (`make base-volume`, `make
+  fetch-server-base-docker`), so the header named a limitation the tree had
+  already solved.
+- The comment on `usage_err` claimed every usage path exits 2. The older
+  verbs (`run`, `create`, `launch`, `status`, ...) report a missing argument
+  through `die`, and `scripts/test_sb_cli.sh` pins that as exit 1. The comment
+  names the actual split.
+- The comment on `instance_env_value` claimed every reader of `instance.env`
+  goes through it. `instance_server_ports`, `instance_kind` and `cmd_env` walk
+  the file themselves; it now says which readers it serves.
+- `emit_env` and its helper `shell_quote` were unreachable, and the comment
+  above them described the export behaviour `cmd_env` implements inline. Both
+  are gone.
+- The FNV-1a rationale in `sbconfig.py` sat above `MIN_PYTHON`, four lines
+  from the constants it explains, and read as that declaration's comment. It
+  sits with them now.
+- `scripts/docker-gui.sh` said the X11 `xhost` grant is for "container root",
+  but the run is pinned to the host uid.
 - The changelog states the version policy this project actually follows, which
   the tag history shows and no document did: a `0.x` minor carries breaking
   contract changes, so a minor is not a safe upgrade for a harness pinned to

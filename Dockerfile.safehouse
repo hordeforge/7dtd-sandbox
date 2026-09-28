@@ -18,13 +18,12 @@
 #   make fetch-server-base-docker   # fetch a base into ./base as your own user
 #
 # Known limitation, measured on this host: steamcmd installs fine to a path
-# inside the container but fails on a bind-mounted one with "Failed to install
+# inside the container but fails on a plain bind mount with "Failed to install
 # app ... (Missing configuration)" (identical image, user and command; only the
-# destination differs). So the fetch image cannot yet write a base straight
-# into a bind-mounted base/, and fetching stays a host job via tools/steamcmd.
-# The image is still the right place for steamcmd to live, and it does reach
-# Steam and download; do not put steamcmd back into the runtime image to work
-# around this.
+# mount mechanism differs). So the fetch targets mount base/ as a Docker local
+# volume bound to this checkout's base/ rather than as `-v host:path`; make
+# base-volume creates it and make fetch-server-base-docker uses it. Do not put
+# steamcmd back into the runtime image to work around this.
 #
 # Bases are pinned by digest, not by a mutable tag, for the same reason the
 # workflows pin actions by commit SHA: a moved tag is unreviewed code.

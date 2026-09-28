@@ -45,8 +45,8 @@ done
 [[ -n "$PROTON_REL" ]] || die "no Proton under $STEAM_ROOT/steamapps/common (looked for -Experimental, 11.0, 10.0)"
 PROTON_DIR="/opt/steam/${PROTON_REL%/proton}"
 
-# Allow local unix-socket X11 clients (container root talking to the host
-# display). Revoke later with: xhost -local:
+# Allow local unix-socket X11 clients (the container, running as the host uid,
+# talking to the host display). Revoke later with: xhost -local:
 if command -v xhost >/dev/null 2>&1; then
   xhost +local: >/dev/null 2>&1 || true
 fi

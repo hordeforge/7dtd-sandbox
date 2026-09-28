@@ -6,9 +6,10 @@
 #   sb run server   <name>                  - dedicated server only (native, app 294420)
 #   sb run both     <name> [-- game args]   - both; client auto-connects to the server
 #
-# Underlying commands (still available):
-#   create / create-server / launch / launch-server / stop / wipe / destroy /
-#   list / status / logs / env / fetch-base / fetch-server-base / doctor / init
+# Underlying commands (the public surface a harness drives):
+#   create / create-server / up / stage / render-config / launch /
+#   launch-server / stop / wipe / destroy / list / status / logs / env /
+#   fetch-base / fetch-server-base / doctor / init / version
 #
 # Run `sb help` for the full list.
 set -euo pipefail
@@ -36,7 +37,11 @@ SB_PY="${SB_PY:-python3}"
 SB_PY_MIN="3.7"
 
 die() { echo "sb: $*" >&2; exit 1; }
-# Exit 2 for usage / missing-instance / bad-flag paths (test_sb_cli contract).
+# Exit 2 for a refused flag, a bad declaration, a missing instance, and the
+# "missing argument" guards of up, stage, render-config and create-server. The
+# older verbs (run, create, launch, status, ...) still report a missing
+# argument through die, so they exit 1; scripts/test_sb_cli.sh pins that, so
+# the split is deliberate rather than an oversight.
 usage_err() { echo "sb: $*" >&2; exit 2; }
 warn() { echo "sb: WARN: $*" >&2; }
 
@@ -69,7 +74,7 @@ Underlying commands (full control):
   render-config <name> KEY=VALUE...
                        declare serverconfig properties; the config is rebuilt
                        from the base template plus every declaration
-                       (KEY is [A-Za-z][A-Za-z0-9_]*, VALUE is one line)
+                       (KEY is [A-Za-z_][A-Za-z0-9_]*, VALUE is one line)
   launch <name> [-- args...]    run client under Proton, no Steam
   launch-server <name>          run dedicated server, blocking
   wipe <name> [name...] reset game/Mods/saves to pristine
@@ -136,11 +141,13 @@ validate_name() {
 }
 
 # One declared value from an instance's instance.env, or empty. Every reader
-# goes through here, so a key is looked up the same way everywhere: last
-# declaration wins, a missing key reads as empty rather than as the comment
-# lines that surround it. Last wins because that is what `sb env` hands the
-# caller: it exports every declaration, so the shell's own last-one-wins
-# settles a hand-edited duplicate before any reader of this file ever sees it.
+# that wants a single value goes through here, so a key is looked up the same
+# way everywhere: last declaration wins, a missing key reads as empty rather
+# than as the comment lines that surround it. Last wins because that is what
+# `sb env` hands the caller: it exports every declaration, so the shell's own
+# last-one-wins settles a hand-edited duplicate before any reader of this file
+# ever sees it. The readers that need the whole file rather than one value
+# (`instance_server_ports`, `instance_kind`, `cmd_env`) walk it themselves.
 # One sed, no second process to trim its output: the bring-up paths look up a
 # dozen keys each.
 env_value() {

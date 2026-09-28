@@ -76,7 +76,7 @@ request. No game, no Proton, no steamcmd.
 | Gate | Pins |
 |---|---|
 | `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); a value XML cannot carry is refused, not written; commented template lines stay commented and a commented `</ServerSettings>` is not an insert anchor; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, in either the paired or the self-closing `<user>` form; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name; `seed-admins` reads its names from stdin and refuses the `--name` spelling |
-| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key is a literal, and a value spanning lines is refused |
+| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key outside `[A-Za-z_][A-Za-z0-9_]*` is refused rather than recorded, and a legal key is upserted as a literal, so none can reach the upsert as a pattern; a value spanning lines is refused |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite; `instance.env`, which carries the same names, is restricted on the same path; no admin name is passed in argv |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout; `sb list` and `sb stop` see the running instance and leave its idle neighbour alone |
@@ -173,7 +173,10 @@ Every property below is gated:
    window anywhere and a stray variable in a caller's shell cannot change what
    a recorded run looked like.
 5. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local
-   player names the server admits at `permission_level=0`. Seeding used to
+   player names the server admits at `permission_level=0`, on top of the three
+   fixed names `sbconfig.py` seeds on every server (`Player`, `client`,
+   `admin`) so a server-only create is usable with nothing declared. Seeding
+   used to
    enumerate whatever client instances existed on the machine, so the same
    instance produced different servers on different hosts. Add names with
    `sb create-server <name> --admin NAME`, or edit `SERVER_ADMINS` and
@@ -225,10 +228,13 @@ by that instance's own `SB_INSTANCE` (server) or `STEAM_COMPAT_DATA_PATH`
 (client). A caller that pkills `7DaysToDieServer.x86_64` by pattern kills every
 other instance on the machine; that is why `7dtd-playtest` dropped the pattern.
 
-`sb render-config` refuses a property name outside `[A-Za-z][A-Za-z0-9_]*` and
-a value carrying a newline (exit 2). The name is a regex in the upsert that
-rewrites an existing property and a line prefix in `instance.props`; the value
-is one line of that file.
+`sb render-config` refuses a property name outside `[A-Za-z_][A-Za-z0-9_]*` and
+a value carrying a newline (exit 2). The name reaches the upsert that rewrites
+an existing property and a line prefix in `instance.props`, so a name holding a
+regex metacharacter could have matched and dropped a neighbour's declaration
+there; the upsert now matches a literal `KEY=` prefix in the shell, and the
+charset keeps a metacharacter from reaching it at all. The value is one line
+of that file.
 
 A bring-up that fails owns its own teardown: when the port wait times out, `sb
 up` and `sb run both` stop the server they started rather than leaving a

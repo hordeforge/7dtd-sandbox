@@ -77,7 +77,9 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
 - **Local clients are always admin.** `sb create-server` / `launch-server` /
   `wipe` / `run both` seed `userdata/Saves/serveradmin.xml` with
   `platform="Local"` `permission_level="0"` entries for the names the instance
-  declares in `SERVER_ADMINS` (stock auth: PltfmId `Local_<playername>`).
+  declares in `SERVER_ADMINS` (stock auth: PltfmId `Local_<playername>`), plus
+  the three fixed names `Player`, `client` and `admin`, which every sandbox
+  server admits so a server-only create is usable without a declaration.
 - **No Steam data-file verification.** `fetch-base` runs steamcmd without
   `-validate` (opt-in), and the sandbox refuses to live inside a `steamapps`
   tree, so Steam can never own or verify sandbox files.
@@ -180,7 +182,9 @@ was told to run with. Everything else is derived:
   `TelnetPort` and `UserDataFolder` belong to the instance and `render-config`
   refuses them.
 - **Admins are declared** in `SERVER_ADMINS`, not discovered by scanning the
-  machine, so the same instance yields the same server on any host.
+  machine, so the same instance yields the same server on any host. Three
+  names (`Player`, `client`, `admin`) are seeded on every server on top of
+  the declared ones, so a server-only create is usable with no declaration.
 - **A declaration is validated where it is written.** `KEY=VALUE` on one line,
   `KEY` matching `[A-Za-z_][A-Za-z0-9_]*`; anything else is refused (exit 2)
   rather than persisted, and a hand-edited `instance.props` is re-validated

@@ -20,13 +20,13 @@ A key the template does not name at all is warned about on stderr: it would be
 inserted and then read by nobody.
 
 seed-admins upserts a `permission_level="0"` Local entry for each name read
-from stdin, one per line. The names arrive on stdin rather than as arguments
-because an argument is world-readable through /proc/<pid>/cmdline for as long
-as the process lives, which publishes the player names this file admits to
-every account on the host.
-Stock auth maps PltfmId `Local_<playername>` to platform="Local"
+from stdin, one per line, plus the three fixed names in DEFAULT_ADMIN_NAMES.
+The names arrive on stdin rather than as arguments because an argument is
+world-readable through /proc/<pid>/cmdline for as long as the process lives,
+which publishes the player names this file admits to every account on the
+host. Stock auth maps PltfmId `Local_<playername>` to platform="Local"
 userid=<playername>; without a seed a Local join lands at permission 1000 and
-cannot run dm/givetools. The names are declared by the instance
+cannot run dm/givetools. The --name values are declared by the instance
 (`SERVER_ADMINS` in instance.env), never discovered from whatever other
 instances happen to exist on the machine: the same declaration must produce
 the same admin file on any host. An entry that is already there is matched by
@@ -59,8 +59,10 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape, unescape
 
-# Seeded even when no client instance exists yet, so a server-only create still
-# yields a usable admin file.
+# Seeded on every server alongside the declared names, so a server-only create
+# still yields a usable admin file with no declaration at all. Fixed, not
+# discovered: the same three land in every instance on every host, so they
+# are not a function of the machine's instance list.
 DEFAULT_ADMIN_NAMES = ("Player", "client", "admin")
 
 SETTINGS_CLOSER = "</ServerSettings>"
@@ -72,15 +74,15 @@ PORT_BLOCK_BASE = 27100
 PORT_BLOCK_SIZE = 5
 PORT_BLOCK_COUNT = 100
 
-# FNV-1a 32-bit: a stable hash across interpreters and machines. Python's own
-# hash() is salted per process, so it would hand the same instance a different
-# port on every run.
 # Oldest interpreter this module supports. It is the only Python in the tree,
 # and `sb` shells out to whatever `python3` the host ships, which on an older
 # distribution is older than anything here was ever run against. Declared so
 # `sb` can refuse with a version instead of failing inside a call.
 MIN_PYTHON = (3, 7)
 
+# FNV-1a 32-bit: a stable hash across interpreters and machines. Python's own
+# hash() is salted per process, so it would hand the same instance a different
+# port on every run.
 FNV_OFFSET_BASIS = 0x811C9DC5
 FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
@@ -565,7 +567,8 @@ def main(argv: list[str] | None = None) -> int:
 
     seed_cmd = sub.add_parser(
         "seed-admins",
-        help="upsert declared Local admins, read one name per line from stdin",
+        help="upsert declared Local admins, read one name per line from stdin; "
+        f"{', '.join(DEFAULT_ADMIN_NAMES)} are always admitted besides these",
     )
     seed_cmd.add_argument("userdata", type=Path)
     seed_cmd.set_defaults(func=cmd_seed_admins)
