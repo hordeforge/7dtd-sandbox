@@ -64,8 +64,8 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
   reaches the main menu with zero Steam processes running.
 - **Local clients are always admin.** `sb create-server` / `launch-server` /
   `wipe` / `run both` seed `userdata/Saves/serveradmin.xml` with
-  `platform="Local"` `permission_level="0"` entries for every client instance
-  name (stock auth: PltfmId `Local_<playername>`).
+  `platform="Local"` `permission_level="0"` entries for the names the instance
+  declares in `SERVER_ADMINS` (stock auth: PltfmId `Local_<playername>`).
 - **No Steam data-file verification.** `fetch-base` runs steamcmd without
   `-validate` (opt-in), and the sandbox refuses to live inside a `steamapps`
   tree, so Steam can never own or verify sandbox files.
@@ -94,7 +94,7 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
   scripts/sb            the CLI
   scripts/sbconfig.py   serverconfig render/get, admin seeding, port derivation
   scripts/docker-gui.sh containerized client with host X11/GPU forwarding
-  Dockerfile.safehouse    steamcmd/steamcmd-based runtime image
+  Dockerfile.safehouse    two targets: runtime (client) and fetch (steamcmd)
 ```
 
 ## Quick start
@@ -225,7 +225,7 @@ Two targets, because provisioning and running are different jobs:
 | Target | Base | For |
 |---|---|---|
 | `runtime` | `ubuntu` (digest-pinned) | the client under Proton with the host X11 socket, GPU (`/dev/dri`) and ntsync |
-| `fetch` | `steamcmd/steamcmd` (digest-pinned) | `sb fetch-base` into a bind-mounted `base/`, without installing steamcmd on the host |
+| `fetch` | `steamcmd/steamcmd` (digest-pinned) | `sb fetch-base` into `base/`, without installing steamcmd on the host |
 
 The runtime image carries **no steamcmd and no Steam**: that is the product
 claim, and an image shipping a Steam provisioning toolchain it never invokes

@@ -155,6 +155,19 @@ instance_dir() {
   echo "$inst"
 }
 
+# One key's value from an instance.env, empty when the key is absent.
+env_value() {
+  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
+}
+
+# An instance-owned key the bring-up cannot proceed without.
+require_env_value() {
+  local inst="$1" key="$2" value
+  value="$(env_value "$inst" "$key")"
+  [[ -n "$value" ]] || die "no $key in $inst/instance.env (recreate the instance)"
+  echo "$value"
+}
+
 copy_tree() {
   local src="$1" dst="$2" what="$3"
   # dst is always a fresh copy of src: any previous content (e.g. an empty
@@ -198,10 +211,11 @@ ensure_local_platform() {
 }
 
 # Always-admin for Local sandbox clients. Stock auth maps PltfmId
-# `Local_<playername>` to platform="Local" userid=<playername>. Safehouse
-# never ships a seed; without this, Local joins land as permission 1000 and
-# cannot run dm/givetools. Idempotent: create the file if missing, upsert a
-# level-0 Local entry for every client instance name under INSTANCES_DIR.
+# `Local_<playername>` to platform="Local" userid=<playername>. Without a
+# seed, Local joins land as permission 1000 and cannot run dm/givetools. The
+# names are the ones SERVER_ADMINS declares, never whatever other instances
+# happen to exist on this machine. Idempotent: create the file if missing,
+# otherwise upsert a level-0 Local entry per name.
 seed_sandbox_admins() {
   local inst="$1" declared name args=()
   declared="$(instance_env_value "$inst" SERVER_ADMINS)"

@@ -2,8 +2,9 @@
 # Run a sandbox command inside 7dtd-safehouse:latest with the host X11 socket
 # and GPU forwarded, so the Windows client window appears on the desktop.
 #
-# Game data, instances and Proton stay on the host (bind mounts). The
-# container has no published ports (--network none).
+# Game data, instances and Proton stay on the host (bind mounts). No port is
+# published; the default docker network is kept because --network none hung
+# Proton's steam.exe stub (see the run invocation below).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
