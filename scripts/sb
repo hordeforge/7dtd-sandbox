@@ -1361,7 +1361,12 @@ record_server_props() {
     rm -f "$tmp"
     die "could not install $props"
   fi
-  sort -o "$props" "$props"
+  # Sorted by byte, not by the caller's collation: the declared order is what
+  # apply_server_config turns into --set arguments, so it fixes the order of the
+  # properties in the rendered serverconfig. Under a UTF-8 locale sort places
+  # `alpha` before `Bravo` and ignores punctuation, so the same declarations
+  # rendered a different serverconfig.xml on a machine with a different locale.
+  LC_ALL=C sort -o "$props" "$props"
 }
 
 # --- commands --------------------------------------------------------------
@@ -1983,16 +1988,30 @@ start_server_detached() {
         </dev/null >"$inst/logs/server.stdout.log" 2>&1 )
 }
 
-# Whole seconds since boot, read from the kernel. A deadline taken from the
+# Milliseconds since boot, read from the kernel. A deadline taken from the
 # wall clock is not a duration: an NTP step forward ends the wait early, a
 # step backward extends it by the size of the step, and neither is the
 # --timeout the caller asked for. /proc/uptime counts uptime, is already a
 # dependency of this script (instance_procs walks /proc/<pid>/environ), and
-# truncating to whole seconds cancels out between the two readings of one wait.
+# carries centiseconds.
+#
+# The fraction is kept rather than truncated. floor(t) - floor(t0) is the true
+# elapsed time only to within a second, and always biased early: a --timeout 3
+# returned anywhere in (2s, 4s), a quarter of the deadline away from what the
+# harness asked for. Milliseconds are one digit wider and cost nothing, since
+# the kernel reports them either way.
 monotonic_now() {
-  local uptime
+  local uptime whole frac
   read -r uptime _ </proc/uptime || die "cannot read /proc/uptime (needed for a monotonic timeout)"
-  printf '%s' "${uptime%%.*}"
+  if [[ "$uptime" == *.* ]]; then
+    whole="${uptime%%.*}"
+    frac="000${uptime#*.}"
+    frac="${frac: -3}"
+  else
+    whole="$uptime"
+    frac=000
+  fi
+  printf '%s' "$(( whole * 1000 + 10#$frac ))"
 }
 
 # Block until a TCP port accepts connections, or die after a timeout. The
@@ -2001,9 +2020,13 @@ monotonic_now() {
 # loading by then too.
 wait_for_port() {
   local host="$1" port="$2" timeout="${3:-$SB_UP_TIMEOUT}"
-  local start
+  local start deadline_ms
+  # The caller's --timeout is seconds; the deadline is compared in the
+  # milliseconds monotonic_now reports, so the wait is the duration asked for
+  # and not one rounded to the second.
+  deadline_ms=$(( timeout * 1000 ))
   start="$(monotonic_now)"
-  while (( $(monotonic_now) - start < timeout )); do
+  while (( $(monotonic_now) - start < deadline_ms )); do
     # The connection is opened in a subshell, so the socket closes with it.
     if (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null; then
       return 0

@@ -45,6 +45,11 @@ UP_CALL_TIMEOUT_SEC = 60
 # spare for a slow runner. A bring-up that waits on the port probe instead of
 # the timeout is the bug this gate exists for.
 NEVER_BINDS_FAILS_BY_SEC = 30
+# The same bring-up, from the other side: the wait has to be the --timeout the
+# harness asked for, not a second less and not a second more. A deadline read
+# off a whole-second counter ends anywhere in (timeout-1s, timeout+1s), which a
+# 3s timeout made a 33% error and a busy runner indistinguishable from a hang.
+NEVER_BINDS_MIN_SEC = 2.9
 # Attempts to find an ephemeral port that is genuinely unoccupied, see free_port.
 FREE_PORT_ATTEMPTS = 20
 
@@ -310,6 +315,9 @@ def test_up_fails_inside_its_timeout_and_names_the_log(tmp: Path) -> None:
         assert elapsed < NEVER_BINDS_FAILS_BY_SEC, (
             f"the --timeout was not honoured ({elapsed:.0f}s)"
         )
+        assert elapsed >= NEVER_BINDS_MIN_SEC, (
+            f"the wait ended {elapsed:.2f}s in, before the 3s --timeout it was given"
+        )
         assert "did not open port" in proc.stderr, proc.stderr
         assert "logs/server.log" in proc.stderr, "the failure must name the log to read"
         # A server that never bound is still running and still owns its port
@@ -340,6 +348,13 @@ def test_the_wait_deadline_is_monotonic(tmp: Path) -> None:
     assert "monotonic_now" in body, "the port wait must take its deadline from monotonic_now"
     assert "date" not in source.split("monotonic_now() {", 1)[1].split("\n}", 1)[0], (
         "monotonic_now must not fall back to the wall clock"
+    )
+    # Sub-second resolution, so a deadline is the --timeout and not that
+    # rounded to the second. Truncating to whole seconds made a --timeout 3
+    # return anywhere in (2s, 4s).
+    frac = source.split("monotonic_now() {", 1)[1].split("\n}", 1)[0]
+    assert "#*." in frac and "1000" in frac, (
+        f"monotonic_now drops the fractional part of /proc/uptime: {frac!r}"
     )
     print("PASS the_wait_deadline_is_monotonic")
 
