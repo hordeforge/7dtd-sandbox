@@ -42,6 +42,8 @@ cat > "$INST/game/serverconfig.xml" <<'EOF'
 	<property name="EACEnabled"						value="true"/>
 	<property name="MaxSpawnedZombies"			value="64"/>
 	<!-- <property name="UserDataFolder"			value="absolute_path"/> -->
+	<!-- <property name="GameWorld"				value="RANDOM WORLD GENERATION"/> -->
+	<!-- <property name="EnemySpawnMode"			value="true"/> -->
 </ServerSettings>
 EOF
 
@@ -91,7 +93,8 @@ expect_eq "new declaration applied"   "$(active_value "$cfg" EnemySpawnMode)" "f
 
 sb render-config srv-demo GameWorld=Pregen06k01 >/dev/null
 expect_eq "last write wins"     "$(active_value "$cfg" GameWorld)"        "Pregen06k01"
-expect_eq "one GameWorld total" "$(grep -c 'name="GameWorld"' "$cfg")"    "1"
+expect_eq "one active GameWorld" \
+  "$(grep -c '^[[:space:]]*<property name="GameWorld"' "$cfg")" "1"
 
 # Undeclaring is what a previous run's leftover would defeat: drop the spawn
 # cap from the declaration and the base template's own value must come back,
@@ -110,19 +113,6 @@ for owned in ServerPort TelnetPort UserDataFolder; do
   expect_eq "$owned refused as a declaration" "$rc" "2"
 done
 
-# --- a declared key is a literal, not a pattern -----------------------------
-
-# `.*` is a legal-looking property name to a caller, and it must replace
-# itself and nothing else. Matched as a regex it dropped every other
-# declaration, so one render-config call erased the instance's whole state.
-cp "$INST/instance.props" "$INST/props.before-glob"
-sb render-config srv-demo '.*=oops' >/dev/null
-expect_eq "a glob-shaped key keeps the other declarations" \
-  "$(grep -c '^[A-Za-z]' "$INST/instance.props")" \
-  "$(grep -c '^[A-Za-z]' "$INST/props.before-glob")"
-expect_eq "the glob-shaped key is still declared" \
-  "$(active_value "$cfg" '.*')" "oops"
-
 # --- the contract is exported, not merely assigned --------------------------
 
 # AGENTS.md documents `eval "$(sb env <name>)"` as a resolution path. A bare
@@ -135,6 +125,61 @@ for var in SERVER_PORT SERVER_TELNET_PORT SERVER_ADMINS SERVER_CONFIG; do
     fail=1
   fi
 done
+
+# --- a malformed declaration is refused where it is written, not later -----
+#
+# Persisting it would leave the instance permanently broken: every launch
+# re-reads instance.props, so the failure would resurface with no record of
+# the command that caused it.
+
+for bad in '=Navezgane' 'Game World=Navezgane' 'Game.World=1' 'MaxSpawned.Zombies=0'; do
+  rc=0
+  sb render-config srv-demo "$bad" >/dev/null 2>&1 || rc=$?
+  expect_eq "malformed declaration '$bad' refused" "$rc" "2"
+done
+if grep -q '=Navezgane$' "$INST/instance.props"; then
+  echo "FAIL: a refused declaration was still written to instance.props" >&2
+  fail=1
+fi
+
+# A hand-edited instance.props is validated where it is read, naming the file
+# and the line, so the refusal is actionable.
+cp "$INST/instance.props" "$INST/props.good"
+printf 'Game.World=1\n' >> "$INST/instance.props"
+rc=0
+sb render-config srv-demo GameWorld=Navezgane >/dev/null 2>&1 || rc=$?
+expect_eq "hand-edited malformed line refused" "$rc" "2"
+msg="$(sb render-config srv-demo GameWorld=Navezgane 2>&1 >/dev/null || true)"
+if [[ "$msg" != *"instance.props:"* ]]; then
+  echo "FAIL: refusal does not name instance.props: $msg" >&2
+  fail=1
+fi
+mv "$INST/props.good" "$INST/instance.props"
+
+# A key the base template never names is inserted, but warned about: the game
+# ignores it, and a suite that believed it declared one would be wrong.
+warn="$(sb render-config srv-demo MaxSpawnedZombiez=0 2>&1 >/dev/null || true)"
+if [[ "$warn" != *"MaxSpawnedZombiez"* ]]; then
+  echo "FAIL: an unknown property was not warned about (got '$warn')" >&2
+  fail=1
+fi
+grep -v '^MaxSpawnedZombiez=' "$INST/instance.props" > "$INST/props.new"
+mv "$INST/props.new" "$INST/instance.props"
+
+# --- a port block the instance cannot use is refused before the server runs -
+
+cp "$INST/instance.env" "$INST/env.good"
+grep -v '^SERVER_TELNET_PORT=' "$INST/instance.env" > "$INST/env.new"
+mv "$INST/env.new" "$INST/instance.env"
+rc=0
+sb render-config srv-demo GameWorld=Navezgane >/dev/null 2>&1 || rc=$?
+expect_eq "missing SERVER_TELNET_PORT refused" "$rc" "1"
+cp "$INST/env.good" "$INST/instance.env"
+sed -i 's/^SERVER_PORT=27105/SERVER_PORT=not-a-port/' "$INST/instance.env"
+rc=0
+sb render-config srv-demo GameWorld=Navezgane >/dev/null 2>&1 || rc=$?
+expect_eq "non-numeric SERVER_PORT refused" "$rc" "1"
+cp "$INST/env.good" "$INST/instance.env"
 
 # --- ports are derived from the name, not from creation order ---------------
 

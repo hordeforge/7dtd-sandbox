@@ -28,25 +28,22 @@ they manage is [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
   boundary, through the environment:
 
   ```bash
-  export STEAMCMD_USER=<account>   # leave STEAMCMD_PASS unset
+  export STEAMCMD_USER=<account>   # the password is never exported
   make fetch-base-docker           # type the password and 2FA code at the prompt
   ```
 
-  `STEAMCMD_PASS` exists for an unattended host fetch and is read from the
-  environment, never argv. Prefer the prompt: an environment variable is
-  visible to anything that can read the process's environ, and a Steam Guard
-  code cannot be scripted anyway.
-- **Steam login is env-only.** `sb fetch-base` reads `STEAMCMD_USER` and
-  `STEAMCMD_PASS` from the environment and passes them to steamcmd. They never
-  appear in a committed file. With `STEAMCMD_PASS` unset, steamcmd prompts on
-  the terminal, which is the safer default for an interactive fetch.
-- **Almost nothing goes through argv.** The process table is world-readable on
-  a normal Linux host, so a password on a command line is a password every
-  local user can read. One exception, stated here rather than left for a
-  reader to discover: `sb fetch-base` passes `STEAMCMD_PASS` to
-  `steamcmd.sh` as a `+login` argument (`scripts/sb`), because that is how
-  steamcmd takes a password. The window is one fetch long, and the prompt is
-  the safer path. Everything else is environment or file content.
+  An environment variable is visible to anything that can read the process's
+  environ, and a Steam Guard code cannot be scripted anyway.
+- **Steam login is env-only, and the password is prompted, not passed.**
+  `sb fetch-base` reads the account name from `STEAMCMD_USER` and lets steamcmd
+  prompt for the password on a terminal. It refuses `STEAMCMD_PASS` (exit 2)
+  rather than ignoring it, because steamcmd accepts a password only as a
+  `+login user pass` argument and argv is world-readable.
+- **Nothing goes through argv.** The process table is world-readable on a
+  normal Linux host, so a password on a command line is a password every local
+  user can read. `sb` passes secrets as environment or file content only, and
+  refuses the one input (the Steam password) that would have to go through
+  argv.
 - **A Local admin name is not shell code.** `SERVER_ADMINS` is written into
   `instance.env`, which callers `source` and which `sb env` prints for `eval`.
   Admin names are charset-validated before they are written, so a name cannot

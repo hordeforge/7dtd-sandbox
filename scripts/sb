@@ -79,8 +79,12 @@ Underlying commands (full control):
 Standard env: SANDBOX_HOME, SANDBOX_INSTANCES, SANDBOX_BASE_GAME,
 SANDBOX_SERVER_BASE_GAME, SANDBOX_STEAMCMD, STEAM_APPID, SERVER_APPID,
 STEAM_ROOT, PROTON, GFX_API, SB_RES (default 1280x720),
-SB_FULLSCREEN (default 0=windowed), STEAMCMD_USER, STEAMCMD_PASS,
-7DTD_PLAYER_NAME.
+SB_FULLSCREEN (default 0=windowed), SB_CONFIG, STEAMCMD_USER,
+7DTD_PLAYER_NAME, STEAM_SEED_SOURCE, FASTCONNECT_DIST.
+
+Credentials: STEAMCMD_USER is the account name; the password is never read
+from the environment (it would have to reach steamcmd as an argument, which
+the process table exposes). 'sb fetch-base' prompts for it on a terminal.
 EOF
 }
 
@@ -116,13 +120,6 @@ validate_name() {
 # lines that surround it.
 instance_env_value() {
   sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
-}
-
-# A serverconfig property name. It is a regex in the upsert that rewrites an
-# existing property and a line prefix in instance.props, so it stays to the
-# characters the stock config uses.
-validate_prop_key() {
-  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || usage_err "invalid property name '$1' (use [A-Za-z][A-Za-z0-9_]*)"
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
@@ -332,6 +329,16 @@ require_steamcmd() {
     The runtime image ships no steamcmd by design."
 }
 
+# The app id goes straight to steamcmd's `app_update`, where a typo fetches
+# whatever that number happens to be (or fails deep in the download), and it
+# is also the SteamAppId the client launch exports. A non-numeric value is a
+# misconfiguration, not something to discover mid-fetch.
+require_appid() { # require_appid <appid> <name>
+  if [[ ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+    die "$2 must be a Steam app id (got '$1')"
+  fi
+}
+
 cmd_fetch() {
   # Steam verification off by default: -validate makes steamcmd hash-check
   # every file against the depot. The whole point of the sandbox is Steam
@@ -343,26 +350,35 @@ cmd_fetch() {
     "") ;;
     *) usage_err "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
   esac
+  # steamcmd only takes a password as a `+login user pass` argument, and argv
+  # is world-readable: every local user on the box could read the Steam
+  # password off the process table for the length of the fetch. Refused before
+  # anything else, rather than silently dropped, so an exported STEAMCMD_PASS
+  # fails loudly instead of leaking (see SECURITY.md).
+  if [[ -n "${STEAMCMD_PASS:-}" ]]; then
+    usage_err "STEAMCMD_PASS is refused: steamcmd takes a password only as a command-line
+    argument, which the process table exposes. Unset it and let steamcmd prompt
+    ('sb fetch-base' in a terminal; 'make fetch-base-docker' allocates a TTY)."
+  fi
   require_steamcmd
+  require_appid "$STEAM_APPID" STEAM_APPID
   assert_not_steam_owned "$BASE_GAME" "base game"
   mkdir -p "$BASE_GAME"
   local login=(+login anonymous)
   if [[ -n "${STEAMCMD_USER:-}" ]]; then
-    login=(+login "$STEAMCMD_USER" "${STEAMCMD_PASS:-}")
-    if [[ -z "${STEAMCMD_PASS:-}" ]]; then
-      echo "sb: STEAMCMD_PASS unset; steamcmd will prompt for the password (run in a terminal)." >&2
-    fi
+    login=(+login "$STEAMCMD_USER")
+    [[ -t 0 ]] || echo "sb: stdin is not a terminal; steamcmd cannot prompt for the password here." >&2
   else
     echo "sb: anonymous login; the 7DTD client (251570) needs a subscription, so this will" >&2
     echo "    fail with 'No subscription' unless the app is free. For a real account set" >&2
-    echo "    STEAMCMD_USER and STEAMCMD_PASS, or run 'sb fetch-base' in a terminal and" >&2
+    echo "    STEAMCMD_USER, or run 'sb fetch-base' in a terminal and" >&2
     echo "    type the password when prompted." >&2
   fi
   if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +@sSteamCmdForcePlatformType windows \
       +force_install_dir "$BASE_GAME" "${login[@]}" \
       +app_update "$STEAM_APPID" "${validate[@]}" +quit ); then
     echo "sb: steamcmd exited nonzero (see its output above); for the paid client (251570) an" >&2
-    echo "    anonymous login cannot work - set STEAMCMD_USER/STEAMCMD_PASS and retry." >&2
+    echo "    anonymous login cannot work - set STEAMCMD_USER and retry." >&2
     exit 1
   fi
 }
@@ -391,6 +407,7 @@ cmd_fetch_server_base() {
     *) usage_err "unknown fetch-server-base option '$1' (--validate)" ;;
   esac
   require_steamcmd
+  require_appid "$SERVER_APPID" SERVER_APPID
   assert_not_steam_owned "$SERVER_BASE_GAME" "server base game"
   mkdir -p "$SERVER_BASE_GAME"
   if ! ( cd "$STEAMCMD_DIR" && ./steamcmd.sh +force_install_dir "$SERVER_BASE_GAME" \
@@ -511,13 +528,12 @@ cmd_launch_server() {
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
   grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
   local game="$inst/game"
-  local port telnet_port
-  port="$(instance_env_value "$inst" SERVER_PORT)"
-  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
-  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
+  instance_server_ports "$inst"
+  local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
   local cfg
-  cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
+  apply_server_config "$inst" "$name" "$port" "$telnet_port"
+  cfg="$APPLIED_CONFIG"
   seed_sandbox_admins "$inst"
   echo "sandbox:   $name (server)"
   echo "game:      $game"
@@ -552,21 +568,66 @@ collect_mods_native_path() {
 # disagrees would send every harness at a port the server never binds.
 INSTANCE_OWNED_PROPS="ServerPort TelnetPort UserDataFolder"
 
+# A declaration is KEY=VALUE, one line. The stock serverconfig names its
+# properties [A-Za-z_][A-Za-z0-9_]*; anything else is a name the game never
+# reads, and a key carrying a regex metacharacter also breaks the upsert that
+# rewrites instance.props. A value with a line break would inject a second
+# declaration, so it is refused at the point it is written rather than at the
+# next launch, when the reason is a file and a line number nobody remembers.
+validate_prop() { # validate_prop <KEY=VALUE> [where]
+  local kv="$1" where="${2:-bad property}" key value
+  [[ "$kv" == *=* ]] || usage_err "$where: '$kv' is not KEY=VALUE"
+  key="${kv%%=*}"
+  value="${kv#*=}"
+  [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+    || usage_err "$where: key '$key' must match [A-Za-z_][A-Za-z0-9_]* (e.g. MaxSpawnedZombies=0)"
+  case "$value" in
+    *$'\n'*|*$'\r'*) usage_err "$where: the value of '$key' spans a line break; a declaration is one line" ;;
+  esac
+}
+
+# The instance's port block, read from its own declaration. Both keys must be
+# present, in range and adjacent: a config that disagrees with instance.env sends
+# every harness at a port the server never binds, and a missing
+# SERVER_TELNET_PORT leaves the dedicated with no telnet at all. Refused here,
+# before the server is started, rather than by whatever the harness finds first.
+instance_server_ports() { # instance_server_ports <inst>; sets SERVER_PORT and SERVER_TELNET_PORT
+  local inst="$1"
+  SERVER_PORT="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
+  SERVER_TELNET_PORT="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  [[ "$SERVER_PORT" =~ ^[1-9][0-9]*$ ]] \
+    || die "no valid SERVER_PORT in $inst/instance.env (recreate the instance)"
+  (( SERVER_PORT <= 65535 )) \
+    || die "SERVER_PORT=$SERVER_PORT is out of range in $inst/instance.env"
+  [[ "$SERVER_TELNET_PORT" =~ ^[1-9][0-9]*$ ]] \
+    || die "no valid SERVER_TELNET_PORT in $inst/instance.env (recreate the instance)"
+  (( SERVER_TELNET_PORT == SERVER_PORT + 1 )) \
+    || die "SERVER_TELNET_PORT=$SERVER_TELNET_PORT is not SERVER_PORT+1 in $inst/instance.env"
+}
+
 # Rebuild the instance serverconfig from the pristine base template plus the
 # properties declared in instance.props. Rebuilt, never edited in place: an
 # in-place edit accumulates, so a suite that sets MaxSpawnedZombies=0 would
 # leave it set for the next suite that says nothing about spawns. Config is a
 # pure function of (base template, declared props, instance identity).
 #
+# The rendered path is returned in APPLIED_CONFIG rather than on stdout: every
+# caller wants it through a command substitution, and a refusal inside one
+# would exit the subshell and hand the caller an empty path, which the server
+# would then run with as `-configfile=`. That is the fail-open this shape
+# exists to prevent.
+#
 # Shared by launch-server, `up` and `run both` so the bring-up paths cannot
 # drift.
 apply_server_config() {
   local inst="$1" name="$2" port="$3" telnet_port="$4"
   local cfg="$inst/serverconfig.xml"
-  local args=() line
+  local args=() line lineno=0
   if [[ -f "$inst/instance.props" ]]; then
     while IFS= read -r line; do
+      lineno=$(( lineno + 1 ))
       [[ -z "$line" || "$line" == \#* ]] && continue
+      validate_prop "$line" "$inst/instance.props:$lineno"
       args+=(--set "$line")
     done < "$inst/instance.props"
   fi
@@ -577,8 +638,9 @@ apply_server_config() {
     --set "ServerPort=$port" \
     --set "TelnetPort=$telnet_port" \
     --set "ServerName=sandbox-$name" \
-    --set "EACEnabled=false" >/dev/null
-  echo "$cfg"
+    --set "EACEnabled=false" >/dev/null \
+    || die "could not render $cfg from $inst/game/serverconfig.xml"
+  APPLIED_CONFIG="$cfg"
 }
 
 # Record declared properties into instance.props (upsert by key, last write
@@ -588,6 +650,7 @@ record_server_props() {
   local props="$inst/instance.props" kv key owned
   touch "$props"
   for kv in "$@"; do
+    validate_prop "$kv"
     key="${kv%%=*}"
     for owned in $INSTANCE_OWNED_PROPS; do
       [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
@@ -1120,7 +1183,8 @@ start_server_detached() {
   # is the sandbox's, and a suite that brings the same instance up hundreds of
   # times would grow it without bound. One start's output per file.
   : > "$inst/logs/server.stdout.log"
-  cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
+  apply_server_config "$inst" "$name" "$port" "$telnet_port"
+  cfg="$APPLIED_CONFIG"
   seed_sandbox_admins "$inst"
   # `setsid --fork` (not a backgrounded `setsid ... &`): setsid forks the
   # server into a new session and exits immediately, so the server is orphaned
@@ -1190,10 +1254,8 @@ cmd_up() {
   local pids
   pids="$(instance_procs "$inst")"
   [[ -n "$pids" ]] && die "instance '$name' is already running (pids: $(echo "$pids" | tr '\n' ' '))"
-  local port telnet_port
-  port="$(instance_env_value "$inst" SERVER_PORT)"
-  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
-  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
+  instance_server_ports "$inst"
+  local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
   start_server_detached "$inst" "$name" "$port" "$telnet_port"
   if ! wait_for_port 127.0.0.1 "$port" "$timeout"; then
     # A server that never bound is still running and still holds its port
@@ -1229,18 +1291,13 @@ cmd_render_config() {
   local inst kv
   inst="$(instance_dir "$name")"
   for kv in "$@"; do
-    [[ "$kv" == *=* ]] || usage_err "bad property '$kv' (want KEY=VALUE)"
-    validate_prop_key "${kv%%=*}"
-    # instance.props is line-based: a value carrying a newline would be
-    # recorded as a second, undeclared property on the next read.
-    [[ "$kv" != *$'\n'* ]] || usage_err "property '$kv' must be a single line"
+    validate_prop "$kv"
   done
   record_server_props "$inst" "$@"
-  local port telnet_port
-  port="$(instance_env_value "$inst" SERVER_PORT)"
-  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
-  [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
-  echo "config -> $(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
+  instance_server_ports "$inst"
+  local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
+  apply_server_config "$inst" "$name" "$port" "$telnet_port"
+  echo "config -> $APPLIED_CONFIG"
 }
 
 cmd_run() {
@@ -1269,9 +1326,8 @@ cmd_run() {
       [[ -d "$INSTANCES_DIR/$srv_name" ]] || cmd_create_server "$srv_name" >/dev/null
 
       local srv_inst="$INSTANCES_DIR/$srv_name"
-      local srv_port
-      srv_port="$(instance_env_value "$srv_inst" SERVER_PORT)"
-      [[ -n "$srv_port" ]] || die "no SERVER_PORT in $srv_inst/instance.env"
+      instance_server_ports "$srv_inst"
+      local srv_port="$SERVER_PORT"
 
       echo "starting server '$srv_name' (port $srv_port) in background..."
       start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$(( srv_port + 1 ))"

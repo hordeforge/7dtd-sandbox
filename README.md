@@ -175,6 +175,13 @@ was told to run with. Everything else is derived:
   refuses them.
 - **Admins are declared** in `SERVER_ADMINS`, not discovered by scanning the
   machine, so the same instance yields the same server on any host.
+- **A declaration is validated where it is written.** `KEY=VALUE` on one line,
+  `KEY` matching `[A-Za-z_][A-Za-z0-9_]*`; anything else is refused (exit 2)
+  rather than persisted, and a hand-edited `instance.props` is re-validated
+  where it is read, naming the file and the line. A key the base template does
+  not name is rendered but warned about: the game would ignore it, so a suite
+  must not believe it took effect. The port pair is checked at every bring-up
+  too, so a hand-edited `instance.env` is refused before a server starts.
 
 `sb stop` matches processes by that instance's own `SB_INSTANCE`, so a harness
 never needs a `pkill` that would reach another instance's server. `sb wipe`
@@ -193,7 +200,18 @@ properties. `7dtd-loadgen` calls it directly through `SANDBOX_ROOT`; only
 `SANDBOX_SERVER_BASE_GAME`, `SANDBOX_STEAMCMD`, `STEAM_APPID` (251570),
 `SERVER_APPID` (294420), `STEAM_ROOT`, `PROTON`, `GFX_API`, `SB_RES`
 (windowed resolution, default `1280x720`), `SB_FULLSCREEN` (`0` default
-windowed), `STEAMCMD_USER`, `STEAMCMD_PASS`, `7DTD_PLAYER_NAME`.
+windowed), `SB_CONFIG` (path to `sbconfig.py`, default beside `sb`),
+`STEAMCMD_USER`, `7DTD_PLAYER_NAME`, `STEAM_SEED_SOURCE` (a Steam install to
+seed the client base from, `--seed-from-steam`), `FASTCONNECT_DIST` (built
+`7dtd-fastconnect` modlet `sb run both` stages).
+
+`SB_RES` and `SB_FULLSCREEN` are read at `sb create` time and then recorded in
+the instance's `instance.env`; every later launch reads them from there, so an
+exported value at launch time changes nothing.
+
+The Steam password is not read from the environment. steamcmd takes it only as
+a `+login` argument, and the process table is world-readable, so `sb fetch-base`
+refuses `STEAMCMD_PASS` (exit 2) and prompts instead.
 
 ## Docker GUI (optional, experimental)
 

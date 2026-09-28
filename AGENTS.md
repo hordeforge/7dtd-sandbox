@@ -155,6 +155,9 @@ Three properties follow, and each is gated:
    overlapping. `ServerPort`, `TelnetPort` and `UserDataFolder` are
    instance-owned: `sb render-config` refuses them (exit 2), because a
    serverconfig that disagrees sends every harness at a port nothing binds.
+   The pair is read back and re-validated at every bring-up: both keys must be
+   present, in range and adjacent, so a hand-edited `instance.env` is refused
+   before a server starts rather than after a harness misses a port.
 3. **An instance's mods are `0_TFP_Harmony` plus exactly what was staged.**
    `sb create` and `sb wipe` prune everything else out of the *instance* (the
    base is never touched: rule 1), for two reasons. A base seeded from a Steam
@@ -178,6 +181,15 @@ Three properties follow, and each is gated:
 
 `sb wipe` clears `instance.props` with the rest of the state: a wiped instance
 is the base template again, not the last suite's world.
+
+A declaration is `KEY=VALUE` on one line, with `KEY` matching
+`[A-Za-z_][A-Za-z0-9_]*`. `sb render-config` refuses anything else (exit 2) at
+the point it is written, and a hand-edited `instance.props` is re-validated
+where it is read, naming the file and the line: persisting a malformed line
+broke every later launch of that instance. A key the base template does not
+name is still rendered, but warned about on stderr, because the game ignores a
+property it has never heard of and a suite would otherwise believe it had
+declared a value that never took effect.
 
 ## Harness bring-up
 

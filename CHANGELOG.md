@@ -102,9 +102,6 @@ Nothing is deprecated ahead of removal in this repository today.
 - `serveradmin.xml` is written `0600` on creation and after every rewrite, like
   the rendered serverconfig. A temp-and-replace that left the file at the
   umask's mode widened a permission_level=0 list to every local user.
-- `SECURITY.md` no longer claims nothing goes through argv. `sb fetch-base`
-  passes `STEAMCMD_PASS` to steamcmd as a `+login` argument, which is world
-  readable in the process table for the duration of a fetch.
 - `seed-admins` is idempotent for a name that needs XML escaping. The upsert
   looked the entry up by the raw name while the entry itself was written
   escaped, so a name carrying `&`, `<` or a quote missed its own row and
@@ -124,6 +121,25 @@ Nothing is deprecated ahead of removal in this repository today.
   left every server contract variable invisible to the child processes a
   sibling harness spawns. Both kinds now emit `export K='V'`, with the value
   single-quoted so a path with a space or a quote survives the `eval`.
+- `sb fetch-base` refuses `STEAMCMD_PASS` (exit 2) instead of passing it to
+  steamcmd as a `+login` argument. argv is world-readable, so the fetch put the
+  Steam password on the process table, which contradicted the rule
+  `SECURITY.md` states. steamcmd now prompts, as the docker path always did.
+- A malformed `render-config` declaration (`=value`, a key with a space or a
+  regex metacharacter, a value spanning a line break) is refused where it is
+  written instead of being persisted. A persisted one broke every later launch
+  of that instance.
+- A server instance with a missing, non-numeric, out-of-range or non-adjacent
+  `SERVER_PORT` / `SERVER_TELNET_PORT` is refused before the server starts, not
+  by whatever the harness finds first.
+- A property the base template does not name is warned about on stderr when
+  the config is rendered: a misspelled key was inserted and then read by
+  nobody, so the suite believed it had declared a value the server ignored.
+- A failed `apply_server_config` no longer leaves the caller with an empty
+  config path. It ran inside a command substitution, so its refusal exited the
+  subshell and the server was launched with `-configfile=`.
+- A non-numeric or zero `STEAM_APPID` / `SERVER_APPID` is refused before the
+  fetch instead of being handed to steamcmd's `app_update`.
 
 ### Documentation
 

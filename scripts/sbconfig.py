@@ -16,6 +16,8 @@ Properties inside XML comments are left verbatim, so the stock template's
 commented `UserDataFolder` stays commented and the active value is the inserted
 one. Values arrive as argv data and are XML-attribute escaped: a quote in a
 world name can never terminate the attribute and inject further properties.
+A key the template does not name at all is warned about on stderr: it would be
+inserted and then read by nobody.
 
 seed-admins upserts a `permission_level="0"` Local entry for each --name given.
 Stock auth maps PltfmId `Local_<playername>` to platform="Local"
@@ -135,6 +137,15 @@ def active_value(text: str, key: str) -> str | None:
     return None
 
 
+def template_property_names(text: str) -> set[str]:
+    """Every property name the template mentions, active or commented.
+
+    The stock serverconfig ships the whole supported set as commented
+    properties, so a name missing from this set is one the game never reads.
+    """
+    return set(re.findall(r'<property\s+name="([^"]*)"', text))
+
+
 def render(
     src: Path,
     dst: Path,
@@ -153,7 +164,18 @@ def render(
 
     if userdata is not None:
         text = set_property(text, "UserDataFolder", str(userdata.resolve()))
+    known = template_property_names(text)
     for key, value in sets.items():
+        # A misspelled key is inserted happily and then read by nobody: the
+        # server runs with the stock value while the suite believes it declared
+        # one. The template lists every supported property, so a name it does
+        # not carry is a name the game does not know.
+        if key not in known:
+            print(
+                f"WARN: {key} is not a property of {src}; the server will ignore it "
+                f"(check the spelling)",
+                file=sys.stderr,
+            )
         text = set_property(text, key, value)
 
     try:

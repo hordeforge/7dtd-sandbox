@@ -68,6 +68,22 @@ check "stop missing ok"         0 env SANDBOX_HOME="$TMP" "$SB" stop nope
 check "create w/o base dies"    1 env SANDBOX_HOME="$TMP" "$SB" create t1
 check "create-server w/o base"  1 env SANDBOX_HOME="$TMP" "$SB" create-server t1
 
+# A Steam password on steamcmd's argv is readable by every local user, so sb
+# refuses the variable rather than passing it or dropping it quietly. Checked
+# before steamcmd is even required, hence rc 2 rather than the rc 1 that a
+# machine with no steamcmd gives.
+check "STEAMCMD_PASS refused" 2 env SANDBOX_HOME="$TMP" STEAMCMD_USER=u \
+  STEAMCMD_PASS=hunter2 "$SB" fetch-base
+
+# An app id is handed straight to steamcmd's app_update, so a typo must be
+# refused rather than fetched.
+mkdir -p "$TMP/tools/steamcmd" && printf '#!/usr/bin/env bash\nexit 0\n' \
+  > "$TMP/tools/steamcmd/steamcmd.sh" && chmod +x "$TMP/tools/steamcmd/steamcmd.sh"
+check "non-numeric STEAM_APPID refused" 1 env SANDBOX_HOME="$TMP" \
+  STEAM_APPID=not-an-app "$SB" fetch-base
+check "non-numeric SERVER_APPID refused" 1 env SANDBOX_HOME="$TMP" \
+  SERVER_APPID=0 "$SB" fetch-server-base
+
 # Fake client base + instance so list/status/env/logs/stop have state.
 mkdir -p "$TMP/base/game" "$TMP/instances/t1/game" "$TMP/instances/t1/logs"
 printf 'platform=Local\ncrossplatform=None\nserverplatforms=Steam,LAN,Local,\n' \
