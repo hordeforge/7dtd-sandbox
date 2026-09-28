@@ -74,6 +74,19 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- The instance port block was range-checked on its first port alone, so a
+  hand-edited `SERVER_PORT=65535` was accepted: telnet landed on 65536 and the
+  dedicated's +2..+4 ports on 65537..65539, outside TCP/UDP entirely. The check
+  bounds the last port of the block (`SERVER_PORT + 4`) against 65535. It also
+  compared with the shell's integer, which wraps: `SERVER_PORT=9223372036854775808`
+  became a negative value and passed `<= 65535`, and the server was rendered with
+  a negative `ServerPort`. Digits are compared now, with the block's span
+  (5 ports) named once in `sb` instead of the literal `+4` and `+ 1` it
+  replaces. `sb run both` also passes the validated `SERVER_TELNET_PORT` to the
+  server it starts rather than recomputing `port + 1`.
+- `sbconfig.py port-block` refused nothing when `PORT_BLOCK_BASE` and
+  `PORT_BLOCK_COUNT` were raised past the port space, and handed out blocks
+  whose telnet and ephemeral ports cannot be bound. It fails by name now.
 - `sb up` and `sb run` converge when they are run again against an instance
   whose create never finished. A create allocates the instance directory
   before the work that fills it, and its rollback only runs when the create

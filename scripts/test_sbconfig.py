@@ -321,6 +321,39 @@ def test_port_block_exhaustion_fails_instead_of_overlapping(tmp: Path) -> None:
     print("PASS port_block_exhaustion_fails_instead_of_overlapping")
 
 
+def test_port_block_stays_inside_the_port_space(tmp: Path) -> None:
+    """Every block the allocator hands out fits, span and all.
+
+    The block is a range the server binds in full (telnet at +1, the dedicated's
+    own ephemeral ports at +2..+4), so a base that fits while the span does not
+    yields an instance whose harness ports nothing can listen on.
+    """
+    last = sbconfig.PORT_BLOCK_BASE + (sbconfig.PORT_BLOCK_COUNT - 1) * sbconfig.PORT_BLOCK_SIZE
+    assert last + (sbconfig.PORT_BLOCK_SIZE - 1) <= sbconfig.PORT_MAX, (
+        "the declared block range runs past the last port"
+    )
+    for name in ("srv-lab", "srv-other", "client-a", "zzz"):
+        port = sbconfig.port_block(name, set())
+        assert (port - sbconfig.PORT_BLOCK_BASE) % sbconfig.PORT_BLOCK_SIZE == 0
+        assert port + (sbconfig.PORT_BLOCK_SIZE - 1) <= sbconfig.PORT_MAX, port
+
+    # A base or count raised past the port space is a refusal, not a block
+    # whose telnet and ephemeral ports cannot be bound.
+    base = sbconfig.PORT_BLOCK_BASE
+    count = sbconfig.PORT_BLOCK_COUNT
+    try:
+        sbconfig.PORT_BLOCK_BASE = sbconfig.PORT_MAX
+        sbconfig.port_block("srv-lab", set())
+    except ValueError as ex:
+        assert "do not fit" in str(ex), ex
+    else:
+        raise AssertionError("a block range past the port space must be refused")
+    finally:
+        sbconfig.PORT_BLOCK_BASE = base
+        sbconfig.PORT_BLOCK_COUNT = count
+    print("PASS port_block_stays_inside_the_port_space")
+
+
 def test_recorded_ports_skips_self_and_garbage(tmp: Path) -> None:
     instances = tmp / "instances"
     for name, body in (
@@ -685,6 +718,7 @@ TESTS = (
     test_port_block_is_derived_from_the_name,
     test_port_block_probes_past_a_taken_block,
     test_port_block_exhaustion_fails_instead_of_overlapping,
+    test_port_block_stays_inside_the_port_space,
     test_recorded_ports_skips_self_and_garbage,
     test_seed_admins_is_utf8_under_a_c_locale,
     test_seed_refuses_names_that_are_not_utf8,

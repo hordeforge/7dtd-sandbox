@@ -4,6 +4,8 @@
 # machine and a recorded run can be reproduced elsewhere. A block another
 # instance already recorded is skipped by a deterministic forward probe.
 # Pure logic against a temp instances dir; no server binary. Part of `make test`.
+# shellcheck disable=SC2154 # the functions under test are sourced out of sb, so
+# the names they set (SERVER_PORT, PORT_MAX, ...) are not assignments here
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +31,40 @@ expect_eq() {
 # shellcheck disable=SC1090,SC1091 # extract alloc_server_ports without running main
 # The interpreter check travels with it: allocating a block shells out to
 # sbconfig.py, so the helper under test now needs its interpreter too.
-source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^alloc_server_ports()/,/^}/p' "$SB")"
+source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^PORT_BLOCK_SIZE=/p;/^PORT_BLOCK_LAST_OFFSET=/p;/^PORT_MAX=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^alloc_server_ports()/,/^}/p' "$SB")"
+
+# --- the block a declaration has to fit in ----------------------------------
+
+# instance_server_ports is the gate a hand-edited instance.env passes through,
+# so the range it accepts is the range a server is ever started on.
+# shellcheck disable=SC1090,SC1091 # sourced out of sb, as the allocator below
+source /dev/stdin <<<"$(sed -n '/^instance_server_ports()/,/^}/p' "$SB")"
+
+# expect_refused <label> <SERVER_PORT> <SERVER_TELNET_PORT>
+expect_refused() {
+  local inst="$TMP/env-$2-$3"
+  mkdir -p "$inst"
+  printf 'SERVER_PORT=%s\nSERVER_TELNET_PORT=%s\n' "$2" "$3" > "$inst/instance.env"
+  if ( instance_server_ports "$inst" ) >/dev/null 2>&1; then
+    echo "FAIL: $1: SERVER_PORT=$2 was accepted" >&2
+    fail=1
+  fi
+}
+
+expect_refused "telnet off the end of the port space" 65535 65536
+expect_refused "spare ports off the end of the port space" 65532 65533
+expect_refused "a port wider than the shell's integer" 9223372036854775808 9223372036854775809
+expect_refused "not a port" 0 1
+
+# The last block that does fit, and one past it: 65531..65535 is legal,
+# 65532..65536 is not.
+accept_dir="$TMP/env-accepted"
+mkdir -p "$accept_dir"
+printf 'SERVER_PORT=65531\nSERVER_TELNET_PORT=65532\n' > "$accept_dir/instance.env"
+instance_server_ports "$accept_dir" \
+  || { echo "FAIL: a block ending exactly at $PORT_MAX was refused" >&2; fail=1; }
+expect_eq "the last legal block's port" "$SERVER_PORT" 65531
+expect_eq "the last legal block's telnet" "$SERVER_TELNET_PORT" 65532
 
 # --- a name determines its block --------------------------------------------
 

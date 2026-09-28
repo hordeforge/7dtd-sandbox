@@ -36,6 +36,16 @@ SB_PY="${SB_PY:-python3}"
 # pinned equal by scripts/test_sb_cli.sh.
 SB_PY_MIN="3.8"
 
+# The instance port block, mirrored from sbconfig.py's PORT_BLOCK_*, which
+# derives the block's first port. The block is a range, not a point: the game
+# port, telnet at +1, and +2..+4 the dedicated's own ephemeral ports, so every
+# check here bounds the last port of the block, never the first alone. A base
+# port of 65535 satisfies `port <= 65535` and still puts telnet and two of the
+# ephemeral ports outside the TCP/UDP space, where nothing binds them.
+PORT_BLOCK_SIZE=5
+PORT_BLOCK_LAST_OFFSET=$(( PORT_BLOCK_SIZE - 1 ))
+PORT_MAX=65535
+
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for a refused flag, a bad declaration, a missing instance, and the
 # "missing argument" guards of up, stage, render-config and create-server. The
@@ -654,9 +664,13 @@ cmd_create_server() {
     rm -rf "$inst"
     die "server instance '$name' was not created; the partial tree at $inst is removed"
   fi
+  # Read back through the same validation the bring-up runs, so the range this
+  # reports is the range the server will be given, and the block's last port
+  # comes from the one constant rather than a literal offset.
   local port
-  port="$(env_value "$inst" SERVER_PORT)"
-  echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
+  instance_server_ports "$inst"
+  port="$SERVER_PORT"
+  echo "server instance '$name' created at $inst (ports ${port}..$(( port + PORT_BLOCK_LAST_OFFSET )))"
 }
 
 # The body of cmd_create_server, run in a subshell so the caller can roll the
@@ -778,14 +792,24 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
 # every harness at a port the server never binds, and a missing
 # SERVER_TELNET_PORT leaves the dedicated with no telnet at all. Refused here,
 # before the server is started, rather than by whatever the harness finds first.
+#
+# The range check bounds the block's last port, since +1 and +2..+4 are ports
+# the server binds too. It also compares digits rather than trusting the shell's
+# arithmetic: a declaration wider than intmax_t (SERVER_PORT=9223372036854775808)
+# wraps to a negative value and satisfied `<= 65535`, so the server was rendered
+# with a negative ServerPort. The regex admits no leading zeros, so a length
+# bound is an exact prefilter and the numeric compare only ever sees 1..99999.
 instance_server_ports() { # instance_server_ports <inst>; sets SERVER_PORT and SERVER_TELNET_PORT
   local inst="$1"
   SERVER_PORT="$(env_value "$inst" SERVER_PORT)"
   SERVER_TELNET_PORT="$(env_value "$inst" SERVER_TELNET_PORT)"
   [[ "$SERVER_PORT" =~ ^[1-9][0-9]*$ ]] \
     || die "no valid SERVER_PORT in $inst/instance.env (recreate the instance)"
-  (( SERVER_PORT <= 65535 )) \
-    || die "SERVER_PORT=$SERVER_PORT is out of range in $inst/instance.env"
+  if [[ ${#SERVER_PORT} -gt ${#PORT_MAX} ]] \
+    || (( SERVER_PORT + PORT_BLOCK_LAST_OFFSET > PORT_MAX )); then
+    die "SERVER_PORT=$SERVER_PORT leaves its ${PORT_BLOCK_SIZE}-port block \
+($SERVER_PORT..$(( SERVER_PORT + PORT_BLOCK_LAST_OFFSET ))) outside 1..$PORT_MAX in $inst/instance.env"
+  fi
   [[ "$SERVER_TELNET_PORT" =~ ^[1-9][0-9]*$ ]] \
     || die "no valid SERVER_TELNET_PORT in $inst/instance.env (recreate the instance)"
   (( SERVER_TELNET_PORT == SERVER_PORT + 1 )) \
@@ -1587,10 +1611,10 @@ cmd_run() {
 
       local srv_inst="$INSTANCES_DIR/$srv_name"
       instance_server_ports "$srv_inst"
-      local srv_port="$SERVER_PORT"
+      local srv_port="$SERVER_PORT" srv_telnet_port="$SERVER_TELNET_PORT"
 
       echo "starting server '$srv_name' (port $srv_port) in background..."
-      start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$(( srv_port + 1 ))"
+      start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$srv_telnet_port"
       echo "waiting for server port $srv_port ..."
       if ! wait_for_port 127.0.0.1 "$srv_port" 90; then
         # Same as `sb up`: a server that never bound is stopped, not left

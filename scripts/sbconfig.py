@@ -73,6 +73,9 @@ SETTINGS_CLOSER = "</ServerSettings>"
 PORT_BLOCK_BASE = 27100
 PORT_BLOCK_SIZE = 5
 PORT_BLOCK_COUNT = 100
+# Highest TCP/UDP port. The block is a range the server binds in full, so the
+# span has to fit and not just the first port.
+PORT_MAX = 65535
 
 # Oldest interpreter this module supports. It is the only Python in the tree,
 # and `sb` shells out to whatever `python3` the host ships, which on an older
@@ -297,6 +300,17 @@ def port_block(name: str, taken: set[int]) -> int:
     probe only moves when another instance already recorded that block.
     """
     start = fnv1a(name) % PORT_BLOCK_COUNT
+    # The last block the probe can reach, so the whole range is checked against
+    # the port space once rather than every returned port. A base or count
+    # raised past it hands out blocks whose telnet and ephemeral ports are
+    # outside TCP/UDP entirely, and nothing binding is a much later report than
+    # a refusal here.
+    last = PORT_BLOCK_BASE + (PORT_BLOCK_COUNT - 1) * PORT_BLOCK_SIZE
+    if last + (PORT_BLOCK_SIZE - 1) > PORT_MAX:
+        raise ValueError(
+            f"port blocks {PORT_BLOCK_BASE}..{last + (PORT_BLOCK_SIZE - 1)} do not fit "
+            f"in 1..{PORT_MAX}"
+        )
     for offset in range(PORT_BLOCK_COUNT):
         slot = (start + offset) % PORT_BLOCK_COUNT
         port = PORT_BLOCK_BASE + slot * PORT_BLOCK_SIZE
