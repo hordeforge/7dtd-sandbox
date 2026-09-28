@@ -147,6 +147,22 @@ Nothing is deprecated ahead of removal in this repository today.
   judge came back empty and the gate asserted against blanks.
 - `scripts/test_sbconfig.py` referenced an `EXIT_FAILED` that was never
   declared, which `ruff` (F821) refuses and the gate could not pass.
+- Two instances could be handed one port block. The claim scan read
+  `SERVER_PORT` verbatim, and `env_line` writes every value quoted
+  (`SERVER_PORT='27100'`), so the token it read was not a digit string, the
+  block another instance had recorded was not a claim, and the forward probe
+  had nothing to step around: every instance derived the same block from its
+  name. `recorded_ports` now reads a declaration the way a sourcing shell
+  would. Separately, the claim is now taken under a create lock
+  (`instances/.create.lock`, held with `flock`): scan and record were two
+  steps with nothing between them, so two creates running at once both saw the
+  slot free. The lock covers the whole create, because a block becomes visible
+  to the next scan only once `instance.env` is written, and the kernel drops it
+  when the holder dies, so an interrupted create leaves nothing to step around.
+- A concurrent `sb create` of one name ran twice. The refusal was a `-e` test
+  followed by `mkdir -p`, and `-p` succeeds against a directory the other
+  create had just made, so both copies wrote into one tree. The claim is now
+  the `mkdir` itself, which is the one allocation the filesystem makes atomic.
 - An interrupted run left what it owned in the instance tree. `sb` registers
   the staging tree a copy is written into, the tree it moves aside to replace
   one, the `instance.props` temp and the directory a create is half-building,

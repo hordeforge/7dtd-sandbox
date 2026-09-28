@@ -516,6 +516,14 @@ require_python() {
   SB_PY_PROBED=1
 }
 
+# The create lock is what makes two concurrent creates hand out two blocks, so
+# a host without flock gets a refusal rather than the unsynchronised allocator
+# the lock replaced. util-linux ships it, and both images are Ubuntu.
+require_flock() {
+  command -v flock >/dev/null 2>&1 \
+    || die "flock not on PATH; creating an instance needs it (util-linux) to claim a port block"
+}
+
 detect_proton() {
   if [[ -n "${PROTON:-}" ]]; then
     [[ -x "$PROTON" ]] || die "PROTON set but not executable: $PROTON"
@@ -1078,6 +1086,30 @@ alloc_server_ports() {
   "$SB_PY" "$SB_CONFIG" port-block "$1" --instances "$INSTANCES_DIR"
 }
 
+# The lock every create holds while it allocates and records its port block.
+#
+# The block is claimed by scanning every other instance.env under
+# INSTANCES_DIR for the SERVER_PORT values already recorded, taking the first
+# free slot from the one the name derives, and writing the result into this
+# instance's contract. Nothing in that sequence is atomic: two `sb
+# create-server` runs at once both scanned a free slot, both derived the same
+# one and both recorded it, and two instances were handed one block. The
+# second server to bind it fails with a port clash that names neither
+# instance, and the whole point of the name-derived block was that a recorded
+# port reproduces elsewhere.
+#
+# So scan and record are one critical section, and the whole create body sits
+# inside it: a block becomes visible to the next scan only once instance.env
+# exists, so a lock released after the allocation would leave the copy (the
+# slow part, and the part a killed create loses) racing the next create.
+#
+# flock, not a lock directory: the kernel drops the lock when the holder dies,
+# so a create that was killed mid-copy leaves no lock for the next run to
+# step around. The fd is scoped to the subshell that holds it, because an fd
+# inherited by an `exec`'d process would keep the lock alive for as long as
+# that process ran.
+CREATE_LOCK="$INSTANCES_DIR/.create.lock"
+
 # Local player names this server admits as permission_level=0. Declared once at
 # create time and read back from instance.env, never discovered by scanning
 # whatever other instances exist: the same declaration must produce the same
@@ -1107,6 +1139,9 @@ cmd_create_server() {
   [[ -d "$SERVER_BASE_GAME" && -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] \
     || die "server base missing at $SERVER_BASE_GAME (run 'sb fetch-server-base' first)"
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
+  # Checked before the directory is claimed, so a host without the lock tool
+  # refuses the create rather than half-running it.
+  require_flock
   local inst="$INSTANCES_DIR/$name"
   assert_contract_safe_root "$inst"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
@@ -1118,7 +1153,17 @@ cmd_create_server() {
     validate_admin_name "$extra"
     admins="${admins:+$admins,}$extra"
   done
-  mkdir -p "$inst"
+  mkdir -p "$INSTANCES_DIR"
+  # The claim itself, not a test followed by a create: two `sb create-server
+  # srv-lab` at once both passed the `-e` test above, both ran `mkdir -p`
+  # (which succeeds against a directory another create just made) and both
+  # copied a base into the same tree. `mkdir` without -p is the one allocation
+  # the filesystem makes atomic, so the loser is refused here instead of
+  # writing over the winner's half-built instance.
+  if ! mkdir "$inst" 2>/dev/null; then
+    [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
+    die "could not create $inst"
+  fi
   # Before the copy, so nothing the body writes below is ever published under
   # the umask.
   restrict_instance_dir "$inst"
@@ -1131,9 +1176,16 @@ cmd_create_server() {
   # error) would otherwise leave an instance dir that refuses every retry with
   # "already exists" and has to be removed by hand. The subshell keeps `die`
   # from ending the whole run, so the rollback is reachable.
+  #
+  # The inner subshell holds the create lock: the port block is allocated by
+  # scanning the other instances and then recorded in instance.env, and two
+  # creates running that sequence at once hand one block to two instances.
   if ! (
     set -e
-    create_server_body "$inst" "$name" "$admins"
+    (
+      flock 9
+      create_server_body "$inst" "$name" "$admins"
+    ) 9>>"$CREATE_LOCK"
   ); then
     rm -rf "$inst"
     sb_release_pending "$inst"
@@ -1534,7 +1586,16 @@ cmd_create() {
   assert_contract_safe_root "$inst"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   PROTON="$(detect_proton)"
-  mkdir -p "$inst"
+  mkdir -p "$INSTANCES_DIR"
+  # The claim, not a test followed by a create: two `sb create cli-x` at once
+  # both passed the `-e` test above, both ran `mkdir -p` against a directory
+  # the other had just made, and both copied a base and a Proton prefix into
+  # the same tree. `mkdir` without -p is the one allocation the filesystem
+  # makes atomic, so the loser is refused instead of writing over the winner.
+  if ! mkdir "$inst" 2>/dev/null; then
+    [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
+    die "could not create $inst"
+  fi
   # Before the copy, so nothing the body writes below is ever published under
   # the umask.
   restrict_instance_dir "$inst"
