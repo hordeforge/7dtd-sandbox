@@ -25,9 +25,16 @@ if [[ ! "$SHIPPED" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # There is exactly one version home. A second literal in the tree is a value
-# that can disagree with the tag gate without the gate seeing it.
+# that can disagree with the tag gate without the gate seeing it. The file
+# types are the ones that can carry a sandbox version: the docs and CI, the
+# shell, the Python gates, the config, and the Dockerfile (whose version comes
+# from the build arg, so its ARG default is filtered rather than its file).
+# The Makefile is not in the list: it carries the analyzer pins, which are
+# version literals by their own right and are held by check-analyzer-versions
+# and scripts/test_sb_cli.sh.
 dupes="$(grep -rn --exclude-dir=.git -E '\b[0-9]+\.[0-9]+\.[0-9]+\b' "$ROOT" \
-  --include='*.md' --include='*.yml' --include='*.sh' --include='sb' \
+  --include='*.md' --include='*.yml' --include='*.sh' --include='*.py' \
+  --include='*.toml' --include='Dockerfile*' --include='sb' \
   | grep -v 'CHANGELOG.md' | grep -E 'version|VERSION' | grep -v 'SB_VERSION=' || true)"
 [[ -z "$dupes" ]] || note "a second version declaration can drift from SB_VERSION:
 $dupes"

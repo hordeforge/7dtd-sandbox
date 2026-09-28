@@ -38,16 +38,29 @@ source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^PORT_BLOCK_SIZE=/p;/
 # instance_server_ports is the gate a hand-edited instance.env passes through,
 # so the range it accepts is the range a server is ever started on. It reads
 # its values through env_value, so that and the unquoting it calls come with it.
-# shellcheck disable=SC1090,SC1091 # sourced out of sb, as the allocator below
+# shellcheck disable=SC1090,SC1091 # sourced out of sb, as the allocator above
 source /dev/stdin <<<"$(sed -n '/^unquote_value()/,/^}/p;/^env_value()/,/^}/p;/^instance_server_ports()/,/^}/p' "$SB")"
+for helper in unquote_value env_value instance_server_ports; do
+  declare -F "$helper" >/dev/null \
+    || { echo "FAIL: $helper was not extracted out of sb" >&2; exit 1; }
+done
 
 # expect_refused <label> <SERVER_PORT> <SERVER_TELNET_PORT>
+# A refusal is a non-zero exit carrying sb's own reason. Accepting any
+# non-zero exit would let an undefined helper, a syntax error or a missing
+# `sed` extraction pass as the port range being refused, so the stderr has to
+# be one of the messages instance_server_ports dies with.
 expect_refused() {
-  local inst="$TMP/env-$2-$3"
+  local inst="$TMP/env-$2-$3" why=""
   mkdir -p "$inst"
   printf 'SERVER_PORT=%s\nSERVER_TELNET_PORT=%s\n' "$2" "$3" > "$inst/instance.env"
-  if ( instance_server_ports "$inst" ) >/dev/null 2>&1; then
+  why="$( ( instance_server_ports "$inst" ) 2>&1 >/dev/null )" && {
     echo "FAIL: $1: SERVER_PORT=$2 was accepted" >&2
+    fail=1
+    return
+  }
+  if ! grep -qE '^sb: (no valid SERVER_(PORT|TELNET_PORT)|SERVER_PORT=.*outside 1\.\.|SERVER_TELNET_PORT=)' <<<"$why"; then
+    echo "FAIL: $1: refused for the wrong reason: $why" >&2
     fail=1
   fi
 }

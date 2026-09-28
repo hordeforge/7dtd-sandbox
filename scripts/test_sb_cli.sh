@@ -28,6 +28,22 @@ check() { # check <desc> <expected-rc> <cmd...>
   fi
 }
 
+# Several gates below drive `sb`'s own helpers by extracting them with sed
+# rather than running the CLI, so they can reach a branch the CLI refuses to
+# enter. A rename on the sb side leaves the sed matching nothing: the helper
+# is then simply undefined, and either the gate dies mid-run on a name error or
+# a case that depended on it stops asserting anything at all. Naming the
+# missing helper is the difference between a red gate and a silent hole.
+require_fn() { # require_fn <fn>...
+  local fn
+  for fn in "$@"; do
+    declare -F "$fn" >/dev/null || {
+      echo "FAIL: $fn is not defined; the extraction out of scripts/sb has drifted" >&2
+      exit 1
+    }
+  done
+}
+
 # --- help / usage ----------------------------------------------------------
 
 check "help exits 0"            0 "$SB" help
@@ -158,6 +174,90 @@ check "logs without file dies"  1 env SANDBOX_HOME="$TMP" "$SB" logs t1
 echo "log-line" > "$TMP/instances/t1/logs/output_log_client.txt"
 check "logs with file ok"       0 env SANDBOX_HOME="$TMP" "$SB" logs t1
 
+# --- teardown is by instance, on the client's marker too --------------------
+
+# A client is bound to its instance by STEAM_COMPAT_DATA_PATH, a server by
+# SB_INSTANCE (AGENTS.md rule 6), and `sb stop` matching only the server one
+# left every Proton and wine process of a client running while reporting the
+# instance as stopped. The marker is what a blanket `pkill` of wine/proton or
+# of 7DaysToDie would sweep up, so a stop that touches one instance's process
+# and not its neighbour's is the whole property.
+#
+# The processes are plain sleeps carrying the marker in their environment: the
+# scan reads /proc/<pid>/environ, so what is under test is the marker match,
+# not the game binary. A neighbour is spawned alongside so a stop that killed
+# by anything but the exact marker would be caught.
+
+mkdir -p "$TMP/instances/t6/game" "$TMP/instances/t6/logs"
+printf 'SANDBOX_NAME=t6\nGAME=%s/instances/t6/game\n' "$TMP" \
+  > "$TMP/instances/t6/instance.env"
+
+marker_sleep() { # marker_sleep <compatdata-path>; sets MARKER_PID
+  # Detached from this script's streams: a backgrounded child that inherits
+  # them holds the pipe open, so anything reading this script's output (make,
+  # a CI log) blocks until the child exits 300s later. Not run in a command
+  # substitution either, for the same reason one level in.
+  env "STEAM_COMPAT_DATA_PATH=$1" sleep 300 >/dev/null 2>&1 &
+  MARKER_PID=$!
+  # Give the child a moment to be visible in /proc with its environment set,
+  # or the scan below reads the tree before the process exists.
+  local waited=0
+  while (( waited < 100 )) && ! grep -aqzF "STEAM_COMPAT_DATA_PATH=$1" \
+    "/proc/$MARKER_PID/environ" 2>/dev/null; do
+    sleep 0.1
+    # `(( waited++ ))` returns the value before the increment, so the first
+    # pass is a failing arithmetic command and `set -e` ends the gate right
+    # there, before any of the cases below it.
+    waited=$((waited + 1))
+  done
+  grep -aqzF "STEAM_COMPAT_DATA_PATH=$1" "/proc/$MARKER_PID/environ" 2>/dev/null || {
+    echo "FAIL: the marked process $MARKER_PID never published its marker" >&2
+    exit 1
+  }
+}
+
+stopped_pid=""
+neighbour_pid=""
+cleanup_markers() {
+  local p
+  for p in "$stopped_pid" "$neighbour_pid"; do
+    [[ -n "$p" ]] && kill -KILL "$p" 2>/dev/null || true
+  done
+}
+trap 'cleanup_markers; rm -rf "$TMP"' EXIT
+
+marker_sleep "$TMP/instances/t1/compatdata"
+stopped_pid="$MARKER_PID"
+marker_sleep "$TMP/instances/t6/compatdata"
+neighbour_pid="$MARKER_PID"
+# Out of the job table, so bash does not print a "Killed" line for a pid this
+# gate stopped on purpose. The pids are kept for cleanup_markers either way.
+disown "$stopped_pid" "$neighbour_pid" 2>/dev/null || true
+
+running_t1="$(env SANDBOX_HOME="$TMP" "$SB" status t1)"
+grep -qE '^running: +yes \(1 procs\)$' <<<"$running_t1" \
+  || { echo "FAIL: a client carrying its marker was reported stopped: $running_t1" >&2; fail=1; }
+
+running_t6="$(env SANDBOX_HOME="$TMP" "$SB" status t6)"
+grep -qE '^running: +yes \(1 procs\)$' <<<"$running_t6" \
+  || { echo "FAIL: the neighbour's marked process was not seen: $running_t6" >&2; fail=1; }
+
+check "stop the client by marker"  0 env SANDBOX_HOME="$TMP" "$SB" stop t1
+# SIGTERM reaches a sleep, so the process is gone as soon as the wait returns.
+kill -0 "$stopped_pid" 2>/dev/null \
+  && { echo "FAIL: sb stop left the client's marked process running (pid $stopped_pid)" >&2; fail=1; }
+kill -0 "$neighbour_pid" 2>/dev/null \
+  || { echo "FAIL: sb stop t1 killed the neighbour's process (pid $neighbour_pid)" >&2; fail=1; }
+
+stopped_t1="$(env SANDBOX_HOME="$TMP" "$SB" status t1)"
+grep -qE '^running: +no$' <<<"$stopped_t1" \
+  || { echo "FAIL: the stopped client still reports running: $stopped_t1" >&2; fail=1; }
+
+cleanup_markers
+stopped_pid=""
+neighbour_pid=""
+trap 'rm -rf "$TMP"' EXIT
+
 # --- steam-ownership guard -------------------------------------------------
 
 mkdir -p "$TMP/steamlib/steamapps/common"
@@ -179,6 +279,7 @@ grep -q "Steam library" <<<"$guard_out" \
 # shellcheck disable=SC1090,SC1091 # extract the guard from sb without running main
 source /dev/stdin <<<"$(sed -n '/^die()/,/^}/p' "$SB")
 $(sed -n '/^assert_not_steam_owned()/,/^}/p' "$SB")"
+require_fn die assert_not_steam_owned
 
 mkdir -p "$TMP/fetched/game/steamapps/downloading"
 touch "$TMP/fetched/game/steamapps/appmanifest_251570.acf"
@@ -241,6 +342,8 @@ check "admin name with slash refused"  2 env SANDBOX_HOME="$TMP" "$SB" create-se
 source /dev/stdin <<<"$(sed -n '/^STOCK_MOD=/p' "$SB")
 $(sed -n '/^is_stock_mod()/,/^}/p' "$SB")
 $(sed -n '/^prune_instance_mods()/,/^}/p' "$SB")"
+require_fn is_stock_mod prune_instance_mods
+[[ -n "${STOCK_MOD:-}" ]] || { echo "FAIL: STOCK_MOD is not defined" >&2; exit 1; }
 
 MODS="$TMP/instances/pruneme/game/Mods"
 mkdir -p "$MODS/0_TFP_Harmony" "$MODS/TFP_CommandExtensions" "$MODS/Xample_MarkersMod" \
@@ -269,6 +372,7 @@ quiet_out="$(prune_instance_mods "$TMP/instances/pruneme")"
 # it, so every server declared its own instance name as a Local admin.
 # shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
 source /dev/stdin <<<"$(sed -n '/^default_server_admins()/,/^}/p' "$SB")"
+require_fn default_server_admins
 expect_eq "pair name only" "$(default_server_admins srv-demo)" "client-demo"
 expect_eq "no pair for a bare name" "$(default_server_admins standalone)" ""
 
@@ -281,6 +385,7 @@ expect_eq "no pair for a bare name" "$(default_server_admins standalone)" ""
 usage_err() { echo "test: $*" >&2; exit 2; }
 # shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
 source /dev/stdin <<<"$(sed -n '/^validate_admin_name()/,/^}/p' "$SB")"
+require_fn validate_admin_name
 for good in client-demo "srv_1" "a.b-c"; do
   check "admin name '$good' accepted" 0 validate_admin_name "$good"
 done
@@ -544,6 +649,7 @@ fi
 # scan, so no GNU-only null-input grep sits between sb and the game.
 # shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
 source /dev/stdin <<<"$(sed -n '/^has_screen_arg()/,/^}/p' "$SB")"
+require_fn has_screen_arg
 has_screen_arg -connect=1.2.3.4 -screen-width 800 && screen_seen=yes || screen_seen=no
 expect_eq "-screen- arg detected" "$screen_seen" "yes"
 has_screen_arg -connect=1.2.3.4 && screen_seen=yes || screen_seen=no

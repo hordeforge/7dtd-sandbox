@@ -49,6 +49,15 @@ source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^requi
 $(sed -n '/^default_server_admins()/,/^}/p' "$SB")
 $(sed -n '/^restrict_instance_env()/,/^}/p' "$SB")
 $(sed -n '/^seed_sandbox_admins()/,/^}/p' "$SB")"
+# A rename on the sb side leaves the sed matching nothing, and the helper is
+# then simply undefined: the first case dies on a name error at best, and at
+# worst the cases after it stop asserting anything. Name the missing helper.
+for helper in die require_python unquote_value env_value default_server_admins \
+  restrict_instance_env seed_sandbox_admins
+do
+  declare -F "$helper" >/dev/null \
+    || { echo "FAIL: $helper is not defined; the extraction out of scripts/sb has drifted" >&2; exit 1; }
+done
 
 seed_sandbox_admins "$INST"
 admin="$UD/Saves/serveradmin.xml"
