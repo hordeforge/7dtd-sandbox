@@ -318,8 +318,9 @@ def test_docker_gui_takes_the_x_grant_back() -> None:
     """`xhost +local:` disables access control for the whole display.
 
     A grant taken for one container and never revoked outlives the container,
-    so the script has to take it back on the way out and still hand the caller
-    the container's exit status.
+    so the script has to take it back on the way out, from a trap as well as
+    the call after the run, and still hand the caller the container's exit
+    status.
     """
     text = DOCKER_GUI.read_text(encoding="utf-8")
     assert "xhost +local:" in text, "the GUI path needs the grant to open the window"
@@ -327,8 +328,14 @@ def test_docker_gui_takes_the_x_grant_back() -> None:
         "the grant must be revoked when the container exits, not left open for "
         "the next process on the display"
     )
-    assert "xhost -local:" in text.split("docker run --rm")[1], (
+    assert "revoke_xhost" in text.split("docker run --rm")[1], (
         "the revoke has to run after the container, so it cannot sit above the run"
+    )
+    assert "trap 'revoke_xhost' EXIT" in text, (
+        "an unset trap covers the exits the call at the bottom never reaches: a "
+        "set -e abort between the grant and the container, or a signal on a "
+        "running client. Both would leave the display open to every local X "
+        "client"
     )
     assert 'exit "$status"' in text, (
         "docker-gui.sh must exit with the container's status, not the revoke's"

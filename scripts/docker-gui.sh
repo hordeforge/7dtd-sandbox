@@ -28,7 +28,7 @@ for hostfile in /etc/passwd /etc/group; do
   [[ -r "$hostfile" ]] || die "$hostfile unreadable; the container runs as the host uid and needs it"
 done
 command -v docker >/dev/null || die "docker not on PATH"
-docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: docker build --target runtime -t $IMAGE -f Dockerfile.safehouse ."
+docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: make docker"
 
 # The same candidates `sb`'s detect_proton tries, in the same order, so a host
 # whose Proton is 10 or 11 runs the native and the containerized client alike
@@ -50,10 +50,24 @@ PROTON_DIR="/opt/steam/${PROTON_REL%/proton}"
 # again below once the container is gone rather than left open for whatever runs
 # next on the display.
 xhost_added=0
+revoke_xhost() {
+  if [[ $xhost_added -eq 1 ]]; then
+    xhost -local: >/dev/null 2>&1 || true
+    xhost_added=0
+  fi
+}
 if command -v xhost >/dev/null 2>&1; then
   xhost +local: >/dev/null 2>&1 || true
   xhost_added=1
 fi
+# Trapped, not called once at the bottom: the grant is host-wide, and every
+# other exit path skips that call. A `set -e` abort between here and the
+# container (a mkdir, a bad bind) or a Ctrl-C on a running client ends the
+# shell without reaching it, leaving the display open to every local unix
+# socket client until the X server is restarted.
+trap 'revoke_xhost' EXIT
+trap 'revoke_xhost; exit 130' INT
+trap 'revoke_xhost; exit 143' TERM
 
 devices=( --device /dev/dri )
 [[ -e /dev/ntsync ]] && devices+=( --device /dev/ntsync )
@@ -153,7 +167,5 @@ docker run --rm \
   "$IMAGE" \
   "${sb_args[@]}" || status=$?
 
-if [[ $xhost_added -eq 1 ]]; then
-  xhost -local: >/dev/null 2>&1 || true
-fi
+revoke_xhost
 exit "$status"

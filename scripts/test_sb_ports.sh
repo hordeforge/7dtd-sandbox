@@ -36,9 +36,10 @@ source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^PORT_BLOCK_SIZE=/p;/
 # --- the block a declaration has to fit in ----------------------------------
 
 # instance_server_ports is the gate a hand-edited instance.env passes through,
-# so the range it accepts is the range a server is ever started on.
+# so the range it accepts is the range a server is ever started on. It reads
+# its values through env_value, so that and the unquoting it calls come with it.
 # shellcheck disable=SC1090,SC1091 # sourced out of sb, as the allocator below
-source /dev/stdin <<<"$(sed -n '/^instance_server_ports()/,/^}/p' "$SB")"
+source /dev/stdin <<<"$(sed -n '/^unquote_value()/,/^}/p;/^env_value()/,/^}/p;/^instance_server_ports()/,/^}/p' "$SB")"
 
 # expect_refused <label> <SERVER_PORT> <SERVER_TELNET_PORT>
 expect_refused() {
