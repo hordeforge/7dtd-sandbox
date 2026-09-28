@@ -229,9 +229,10 @@ ensure_local_platform() {
 # Always-admin for Local sandbox clients. Stock auth maps PltfmId
 # `Local_<playername>` to platform="Local" userid=<playername>. Without a
 # seed, Local joins land as permission 1000 and cannot run dm/givetools. The
-# names are the ones SERVER_ADMINS declares, never whatever other instances
-# happen to exist on this machine. Idempotent: create the file if missing,
-# otherwise upsert a level-0 Local entry per name.
+# names are read back from this instance's own SERVER_ADMINS declaration, never
+# discovered from whatever other instances exist on the machine. Idempotent:
+# creates the file if missing, otherwise upserts a level-0 Local entry per
+# declared name.
 seed_sandbox_admins() {
   local inst="$1" declared name args=()
   declared="$(instance_env_value "$inst" SERVER_ADMINS)"
@@ -568,7 +569,10 @@ record_server_props() {
     for owned in $INSTANCE_OWNED_PROPS; do
       [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
     done
-    grep -v "^$key=" "$props" > "$props.tmp" 2>/dev/null || : > "$props.tmp"
+    # A literal prefix match, not a regex: a key carrying `.` or `*` used to
+    # match (and drop) every other declaration, losing the instance's whole
+    # declared state to one `sb render-config` call.
+    awk -v p="$key=" 'index($0, p) != 1' "$props" > "$props.tmp"
     printf '%s\n' "$kv" >> "$props.tmp"
     mv "$props.tmp" "$props"
   done
@@ -788,6 +792,29 @@ cmd_status() {
   fi
   echo "--- instance.env ---"
   cat "$inst/instance.env" 2>/dev/null || true
+}
+
+# Single-quote for eval: an unquoted path with a space or a glob would re-split
+# when a caller runs the documented `eval "$(sb env <name>)"`.
+shell_quote() {
+  local s="$1"
+  printf "'%s'" "${s//\'/\'\\\'\'}"
+}
+
+# Every line of the contract, for both instance kinds. A bare `KEY=value` line
+# defines a shell variable but does not export it, so a server contract read
+# this way was invisible to every child process a sibling harness spawned.
+emit_env() {
+  local kv key value
+  for kv in "$@"; do
+    key="${kv%%=*}"
+    value="${kv#*=}"
+    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      printf 'export %s=%s\n' "$key" "$(shell_quote "$value")"
+    else
+      printf 'export %s=%s\n' "$(shell_quote "$key")" "$(shell_quote "$value")"
+    fi
+  done
 }
 
 cmd_env() {

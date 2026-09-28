@@ -158,12 +158,11 @@ def render(
 
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(text, encoding="utf-8")
     except OSError as ex:
         raise RuntimeError(f"cannot write generated serverconfig {dst}: {ex}") from ex
     # The rendered config can carry TelnetPassword; keep it user-only rather
     # than inheriting a world-readable umask.
-    _restrict(dst)
+    _atomic_write(dst, text, mode=0o600)
     return text
 
 
@@ -220,9 +219,16 @@ def _user_line(name: str) -> str:
 
 
 def _upsert_user(text: str, name: str) -> tuple[str, bool]:
-    """Force a level-0 Local entry for `name`. Returns (text, changed)."""
+    """Force a level-0 Local entry for `name`. Returns (text, changed).
+
+    The lookup key is the escaped name, because that is what `_user_line`
+    wrote. Matching the raw name instead meant every launch of an instance
+    whose admin name contains &, < or " missed its own entry and appended a
+    second copy, so the file grew one duplicate per launch.
+    """
     pattern = re.compile(
-        rf'(<user\b(?=[^>]*\bplatform="Local")(?=[^>]*\buserid="{re.escape(name)}")[^>]*?/?>)',
+        r'(<user\b(?=[^>]*\bplatform="Local")(?=[^>]*\buserid="%s")[^>]*?/?>)'
+        % re.escape(xml_attr(name)),
         re.IGNORECASE,
     )
     match = pattern.search(text)
@@ -277,15 +283,26 @@ def _restrict(path: Path) -> None:
         print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    """Publish via temp+replace so a failed write leaves the old file intact."""
+def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+    """Publish via temp+replace so a failed write leaves the old file intact.
+
+    The mode is applied to the temp file, before the rename, so there is no
+    window in which the published name carries the process umask, and the
+    file being replaced does not widen either.
+    """
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    # The temp carries the same content as the file it replaces, so it gets
-    # the same mode: replacing a 0600 file with a umask-default one would widen
-    # it to every local user.
-    _restrict(tmp)
-    tmp.replace(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        # The rendered config can carry TelnetPassword, and serveradmin.xml a
+        # level-0 admin list; keep both user-only.
+        try:
+            os.chmod(tmp, mode)
+        except OSError as ex:
+            print(f"WARN: could not restrict {path} to {mode:04o}: {ex}", file=sys.stderr)
+        os.replace(tmp, path)
+    except OSError as ex:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"cannot write {path}: {ex}") from ex
 
 
 def _parse_sets(items: list[str]) -> dict[str, str]:
@@ -317,7 +334,7 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
     names = list(dict.fromkeys([*args.names, *DEFAULT_ADMIN_NAMES]))
     try:
         changed = seed_admins(args.userdata / "Saves" / "serveradmin.xml", names)
-    except OSError as ex:
+    except (OSError, RuntimeError) as ex:
         print(f"ERROR: cannot seed serveradmin.xml: {ex}", file=sys.stderr)
         return 1
     if changed:

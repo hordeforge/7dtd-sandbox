@@ -215,6 +215,10 @@ eval "$(/path/to/7dtd-sandbox/scripts/sb env <name>)"
 source /path/to/7dtd-sandbox/instances/<name>/instance.env
 ```
 
+`sb env` prints `export K='V'` for both instance kinds, so the values reach
+the environment of every process the caller spawns after the `eval`, not just
+the caller's own shell.
+
 | Var | Meaning |
 |---|---|
 | `GAME` / `SERVER_GAME` | instance game dir |

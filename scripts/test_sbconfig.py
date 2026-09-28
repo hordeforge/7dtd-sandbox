@@ -205,6 +205,22 @@ def test_seed_is_idempotent(tmp: Path) -> None:
     print("PASS seed_is_idempotent")
 
 
+def test_seed_is_idempotent_for_escaped_names(tmp: Path) -> None:
+    """A name that gets XML-escaped is still found by its own upsert.
+
+    The upsert looks the entry up by the value ``_user_line`` wrote. Matching
+    the raw name instead meant a name carrying ``&``, ``<`` or a quote missed
+    its own entry and appended a second one, so every launch of the instance
+    grew the admin file by another copy.
+    """
+    first = _seed(tmp, 'a"b&c<d')
+    second = _seed(tmp, 'a"b&c<d')
+    assert first == second, "reseed duplicated an entry whose name needs escaping"
+    root = ET.fromstring(second)
+    assert [u.get("userid") for u in root.iter("user")].count('a"b&c<d') == 1
+    print("PASS seed_is_idempotent_for_escaped_names")
+
+
 def test_seed_is_host_independent(tmp: Path) -> None:
     """The same declaration produces the same file, byte for byte."""
     a = _seed(tmp, "client-lab", "extra")
@@ -310,6 +326,7 @@ TESTS = (
     test_seeds_only_declared_names,
     test_seed_upserts_demoted_admin,
     test_seed_is_idempotent,
+    test_seed_is_idempotent_for_escaped_names,
     test_seed_is_host_independent,
     test_port_block_is_derived_from_the_name,
     test_port_block_probes_past_a_taken_block,

@@ -110,6 +110,32 @@ for owned in ServerPort TelnetPort UserDataFolder; do
   expect_eq "$owned refused as a declaration" "$rc" "2"
 done
 
+# --- a declared key is a literal, not a pattern -----------------------------
+
+# `.*` is a legal-looking property name to a caller, and it must replace
+# itself and nothing else. Matched as a regex it dropped every other
+# declaration, so one render-config call erased the instance's whole state.
+cp "$INST/instance.props" "$INST/props.before-glob"
+sb render-config srv-demo '.*=oops' >/dev/null
+expect_eq "a glob-shaped key keeps the other declarations" \
+  "$(grep -c '^[A-Za-z]' "$INST/instance.props")" \
+  "$(grep -c '^[A-Za-z]' "$INST/props.before-glob")"
+expect_eq "the glob-shaped key is still declared" \
+  "$(active_value "$cfg" '.*')" "oops"
+
+# --- the contract is exported, not merely assigned --------------------------
+
+# AGENTS.md documents `eval "$(sb env <name>)"` as a resolution path. A bare
+# KEY=value line defines a shell variable and stops there, so a sibling
+# harness that spawns a client or a load generator saw nothing.
+exported="$(bash -c 'eval "$1"; env' _ "$(sb env srv-demo)")"
+for var in SERVER_PORT SERVER_TELNET_PORT SERVER_ADMINS SERVER_CONFIG; do
+  if ! grep -q "^$var=" <<<"$exported"; then
+    echo "FAIL: sb env did not export $var to a child process" >&2
+    fail=1
+  fi
+done
+
 # --- ports are derived from the name, not from creation order ---------------
 
 first="$(python3 "$SBCONFIG" port-block srv-lab)"

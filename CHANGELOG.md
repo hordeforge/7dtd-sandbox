@@ -87,6 +87,25 @@ Nothing is deprecated ahead of removal in this repository today.
 - `SECURITY.md` no longer claims nothing goes through argv. `sb fetch-base`
   passes `STEAMCMD_PASS` to steamcmd as a `+login` argument, which is world
   readable in the process table for the duration of a fetch.
+- `seed-admins` is idempotent for a name that needs XML escaping. The upsert
+  looked the entry up by the raw name while the entry itself was written
+  escaped, so a name carrying `&`, `<` or a quote missed its own row and
+  appended a second one, growing `serveradmin.xml` by a copy on every launch.
+- The rendered serverconfig is published atomically, like `serveradmin.xml`
+  already was. A write interrupted partway left a truncated config that the
+  server would then start from, after the caller had already wiped the save
+  it was about to regenerate. The 0600 mode is applied to the temp file before
+  the rename, so there is no window where the config is world-readable.
+- A declared property key is matched literally when it replaces an earlier
+  declaration. Matched as a regex, a key like `.*` dropped every other entry in
+  `instance.props`, so one `sb render-config` call erased the instance's whole
+  declared state.
+- `sb env` exports for a server instance, as it already did for a client. It
+  printed bare `KEY=value` lines, which define a shell variable without
+  exporting it, so the documented `eval "$(sb env <name>)"` resolution path
+  left every server contract variable invisible to the child processes a
+  sibling harness spawns. Both kinds now emit `export K='V'`, with the value
+  single-quoted so a path with a space or a quote survives the `eval`.
 
 ### Documentation
 
