@@ -53,7 +53,35 @@ ignore = [
 # other gates in scripts/test_*.sh report too. S314 is off here because the
 # XML they parse is what sbconfig.py just rendered into a temp dir, not input
 # from anywhere untrusted.
-"scripts/test_*.py" = ["S101", "T201", "PT", "PLC", "S603", "S607", "S314"]
+#
+# PLR2004 and S311 are off for the same reason PLC already is. PLR2004 wants
+# every seed probability, randrange bound and expected exit code lifted into a
+# named constant: in a fuzzer those numbers *are* the specification of what is
+# being generated, and naming them one constant at a time reads worse than the
+# literal while asserting nothing. S311 wants a CSPRNG for `random.Random`,
+# whose entire job here is a reproducible seed, which is the opposite of what
+# the rule is protecting.
+"scripts/test_*.py" = [
+    "S101",
+    "T201",
+    "PT",
+    "PLC",
+    "PLR2004",
+    "S311",
+    "S603",
+    "S607",
+    "S314",
+]
+# S108 wants a random temp path for every /tmp literal. The one in the
+# Dockerfile gate is the X11 socket directory docker-gui.sh binds, spelled
+# exactly as it has to appear in a Dockerfile, and it is an assertion about
+# the image rather than somewhere the gate writes.
+"scripts/test_dockerfile.py" = ["S108"]
+# S314 wants defusedxml for every ElementTree parse. The only parse left is
+# _wellformed()'s "would an XML parser accept this serveradmin.xml at all",
+# over a file the sandbox itself wrote a moment earlier. It is the same
+# reasoning as the test-script entry above, on the other side of the render.
+"scripts/sbconfig.py" = ["S314"]
 
 [format]
 docstring-code-format = false

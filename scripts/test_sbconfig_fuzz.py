@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import sbconfig  # noqa: E402
+import sbconfig
 
 # The gate's own budget. Small enough to run in `make test` on every push,
 # large enough for the mutation chain to reach the insert, upsert and
@@ -65,7 +65,7 @@ ADMIN_NAMES = ("client-sg", "Player", "admin", "srv-1.2_x")
 
 # Values a caller can actually declare: XML metacharacters, a null byte, a
 # newline, a lone surrogate escape, and the plain text around them.
-HOSTILE_VALUE_CHARS = tuple('"\'<>&;\n\t\x00\r') + ("\u00e9", "\u4e2d", "\U0001f600")
+HOSTILE_VALUE_CHARS = (*tuple("\"'<>&;\n\t\x00\r"), "\u00e9", "\u4e2d", "\U0001f600")
 
 # Seed corpus: the stock dedicated serverconfig shapes (`sb` renders from this
 # file, so its comments and tab padding are what the renderer really meets).
@@ -106,29 +106,29 @@ def _serverconfig_fragment(rng: random.Random) -> str:
     value = _random_value(rng)
     shape = rng.randrange(4)
     if shape == 0:
-        return '\t<property name="%s"\tvalue="%s"/>' % (key, value)
+        return f'\t<property name="{key}"\tvalue="{value}"/>'
     if shape == 1:
-        return '\t<property name="%s" value="%s"/>\t\t<!-- note -->' % (key, value)
+        return f'\t<property name="{key}" value="{value}"/>\t\t<!-- note -->'
     if shape == 2:
-        return '\t<!-- <property name="%s" value="%s"/> -->' % (key, value)
-    return '\t<property name="%s" value="%s" />' % (key, value)
+        return f'\t<!-- <property name="{key}" value="{value}"/> -->'
+    return f'\t<property name="{key}" value="{value}" />'
 
 
 def _user_fragment(rng: random.Random, name: str) -> str:
     platform = rng.choice(("Local", "Local", "Steam", "EOS"))
     level = rng.choice(("0", "0", "1000", ""))
     attrs = [
-        'platform="%s"' % platform,
-        'userid="%s"' % name,
-        'name="%s"' % rng.choice((name, "Player", "steamer")),
+        f'platform="{platform}"',
+        f'userid="{name}"',
+        'name="{}"'.format(rng.choice((name, "Player", "steamer"))),
     ]
     if level:
-        attrs.append('permission_level="%s"' % level)
+        attrs.append(f'permission_level="{level}"')
     rng.shuffle(attrs)
     body = " ".join(attrs)
     if rng.random() < 0.5:
-        return "    <user %s />" % body
-    return "    <user %s></user>" % body
+        return f"    <user {body} />"
+    return f"    <user {body}></user>"
 
 
 def _serveradmin_fragment(rng: random.Random, names: list[str]) -> str:
@@ -142,8 +142,8 @@ def _serveradmin_fragment(rng: random.Random, names: list[str]) -> str:
     if roll == 3:
         return "\n" + rng.choice(("x" * rng.randrange(1, MAX_RUN_CHARS), "\t", "\n", "<!-- c -->"))
     if roll == 4:
-        return '  <user platform="Local" userid="%s" name="x">oops' % rng.choice(names)
-    return rng.choice(("<?xml version=\"1.0\"?>", "<adminTools>", "</adminTools>", ""))
+        return f'  <user platform="Local" userid="{rng.choice(names)}" name="x">oops'
+    return rng.choice(('<?xml version="1.0"?>', "<adminTools>", "</adminTools>", ""))
 
 
 def _mutate(rng: random.Random, text: str) -> str:
@@ -174,7 +174,9 @@ def _serverconfig_input(rng: random.Random) -> str:
         parts = [_serverconfig_fragment(rng) for _ in range(rng.randrange(1, MAX_FRAGMENTS))]
         if rng.random() < 0.9:
             parts.insert(rng.randrange(len(parts) + 1), "</ServerSettings>")
-        body = '<?xml version="1.0"?>\n<ServerSettings>\n%s\n</ServerSettings>\n' % "\n".join(parts)
+        body = '<?xml version="1.0"?>\n<ServerSettings>\n{}\n</ServerSettings>\n'.format(
+            "\n".join(parts)
+        )
     return body if rng.random() < 0.5 else _mutate(rng, body)
 
 
@@ -185,7 +187,10 @@ def _serveradmin_input(rng: random.Random, names: list[str]) -> str:
         parts = [_serveradmin_fragment(rng, names) for _ in range(rng.randrange(1, MAX_FRAGMENTS))]
         if rng.random() < 0.9 and not any(p.strip() == "</users>" for p in parts):
             parts.append("  </users>")
-        body = '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>%s\n  </users>\n</adminTools>\n' % "\n".join(parts)
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n'
+            "  <users>\n{}\n  </users>\n</adminTools>\n".format("\n".join(parts))
+        )
     return body if rng.random() < 0.5 else _mutate(rng, body)
 
 
@@ -280,7 +285,9 @@ def check_serverconfig(doc: str, sets: dict[str, str], tmp: Path) -> None:
         root = ET.fromstring(out)
     except ET.ParseError as ex:
         if source_wellformed:
-            raise Finding(f"render turned a well-formed template into broken XML: {ex}", doc) from ex
+            raise Finding(
+                f"render turned a well-formed template into broken XML: {ex}", doc
+            ) from ex
         return
     if source_wellformed:
         # Pair assertion across the injection boundary: the declared property
@@ -324,7 +331,11 @@ def check_serveradmin(doc: str, names: list[str], tmp: Path) -> None:
         )
     levels = {u.get("userid"): u.get("permission_level") for u in root.iter("user")}
     for name in names:
-        _require(levels.get(name) == "0", f"declared admin {name!r} is at {levels.get(name)!r}", doc)
+        _require(
+            levels.get(name) == "0",
+            f"declared admin {name!r} is at {levels.get(name)!r}",
+            doc,
+        )
     _require(
         _timed(doc, sbconfig.seed_admins, admin, names) is False,
         "a second seed changed a correct file",
@@ -338,11 +349,16 @@ def run(name: str, build, check, iterations: int, seed: int) -> int:
     for index in range(iterations):
         doc, payload = build(random.Random(seed + index))
 
-        def reproduce(candidate: str) -> bool:
+        # payload is bound as a default argument, not closed over: `reproduce`
+        # has to keep checking *this* iteration's payload. A shrinker that ran
+        # after the loop advanced would otherwise re-check the shrunk document
+        # against the next iteration's payload and report a reproducer that
+        # does not reproduce.
+        def reproduce(candidate: str, payload: str = payload) -> bool:
             with tempfile.TemporaryDirectory() as td:
                 try:
                     check(candidate, payload, Path(td))
-                except Exception:  # noqa: BLE001 - any failure is a finding
+                except Exception:
                     return True
             return False
 
@@ -353,7 +369,7 @@ def run(name: str, build, check, iterations: int, seed: int) -> int:
                 ex.iteration = index
                 ex.doc = _shrink(random.Random(seed + index), ex.doc, reproduce)
                 findings.append(ex)
-            except Exception as ex:  # noqa: BLE001 - uncaught means the parser broke
+            except Exception as ex:
                 escaped = Finding(f"uncaught {type(ex).__name__}: {ex}", "")
                 escaped.iteration = index
                 findings.append(escaped)
@@ -364,9 +380,13 @@ def run(name: str, build, check, iterations: int, seed: int) -> int:
             file=sys.stderr,
         )
         if ex.doc:
-            print("reproducer:\n" + ex.doc.encode("unicode_escape").decode("ascii"), file=sys.stderr)
+            escaped = ex.doc.encode("unicode_escape").decode("ascii")
+            print("reproducer:\n" + escaped, file=sys.stderr)
     if findings:
-        print(f"test_sbconfig_fuzz: FAILED ({len(findings)} findings in {name}, seed {seed})", file=sys.stderr)
+        print(
+            f"test_sbconfig_fuzz: FAILED ({len(findings)} findings in {name}, seed {seed})",
+            file=sys.stderr,
+        )
         return 1
     print(f"test_sbconfig_fuzz: {name}: OK ({iterations} iterations, seed {seed})")
     return 0

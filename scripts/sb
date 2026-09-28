@@ -111,9 +111,16 @@ EOF
 require_python() {
   command -v "$SB_PY" >/dev/null 2>&1 \
     || die "$SB_PY not on PATH; sbconfig.py needs Python $SB_PY_MIN or newer"
-  "$SB_PY" -c 'import sys; sys.exit(sys.version_info < tuple(int(p) for p in sys.argv[1].split(".")))' \
-    "$SB_PY_MIN" 2>/dev/null \
-    || die "$SB_PY is older than $SB_PY_MIN; sbconfig.py needs Python $SB_PY_MIN or newer"
+  # The probe's own stderr is kept and reported. Discarding it (2>/dev/null)
+  # made every failure of this check read as "is older than 3.7", including the
+  # ones that are not that at all: an interpreter that cannot import sys, a
+  # venv whose python is a dangling symlink, a wrapper that exits nonzero for
+  # its own reasons. The operator was told to install a newer Python for what
+  # was really a broken interpreter.
+  local why
+  why="$("$SB_PY" -c 'import sys; sys.exit(sys.version_info < tuple(int(p) for p in sys.argv[1].split(".")))' \
+        "$SB_PY_MIN" 2>&1)" \
+    || die "$SB_PY cannot run the version probe; sbconfig.py needs Python $SB_PY_MIN or newer: ${why:-no output}"
 }
 
 detect_proton() {
@@ -217,19 +224,58 @@ instance_dir() {
   echo "$inst"
 }
 
+# Replace $dst with a fresh copy of $src. The copy is built in a staging
+# sibling and published with a rename, because both of the obvious shortcuts
+# lose data on a failed copy:
+#
+#   rm -rf "$dst"; cp ...   an unreadable file, a full disk or an interrupt
+#                           destroys the tree and then fails to rebuild it, so
+#                           `sb wipe` left the instance with no game at all and
+#                           its staged Mods gone with the old tree.
+#   cp ... onto a dirty $dst  the failed reflink attempt leaves a partially
+#                           populated $dst, and the --reflink=auto retry then
+#                           copies the source *into* it, so a failed
+#                           reflink produced a structurally wrong tree
+#                           (game/server-game/7DaysToDieServer.x86_64) that
+#                           reported success on the retry.
 copy_tree() {
   local src="$1" dst="$2" what="$3"
-  # dst is always a fresh copy of src: any previous content (e.g. an empty
-  # dir left by a failed fetch) is replaced. dst is a sandbox-owned path.
-  rm -rf "$dst"
-  if cp -a --reflink=always "$src" "$dst" 2>/dev/null; then
+  local staging="$dst.incoming.$$" err
+  rm -rf "$staging"
+  if err="$(cp -a --reflink=always "$src" "$staging" 2>&1)"; then
+    publish_tree "$staging" "$dst"
     return 0
   fi
-  if cp -a --reflink=auto "$src" "$dst" 2>/dev/null; then
+  rm -rf "$staging"
+  if err="$(cp -a --reflink=auto "$src" "$staging" 2>&1)"; then
     warn "reflink unavailable, plain-copied $what (slower)"
+    publish_tree "$staging" "$dst"
     return 0
   fi
-  die "could not copy $what from $src to $dst"
+  rm -rf "$staging"
+  # cp's own message is the actionable part (which file, which reason); the
+  # bare "copy failed" this replaced left the operator guessing at a 17 GB
+  # tree copy.
+  die "could not copy $what from $src to $dst: ${err:-cp reported no reason}"
+}
+
+# Swap a fully staged tree in for $dst. The tree being replaced is moved aside
+# only once the replacement exists, and is moved back if the install fails, so
+# no failure on this path can leave a caller with less than it started with.
+publish_tree() {
+  local staging="$1" dst="$2"
+  local old="$dst.replaced.$$"
+  if [[ -e "$dst" ]]; then
+    mv "$dst" "$old" || die "could not move $dst aside to replace it"
+  fi
+  if mv "$staging" "$dst"; then
+    rm -rf "$old"
+    return 0
+  fi
+  if [[ -e "$old" ]]; then
+    mv "$old" "$dst" || warn "could not restore $dst from $old; the original tree is at $old"
+  fi
+  die "could not install $dst from $staging"
 }
 
 # The platform surface an instance runs with. A client is Local only (no Steam
@@ -734,33 +780,53 @@ apply_server_config() {
 # can still see which key it was.
 record_server_props() {
   local inst="$1"; shift
-  local props="$inst/instance.props" kv key owned line
-  touch "$props"
-  # Every key is validated before anything is written, so a refusal leaves the
-  # declaration exactly as it was.
-  local -a prefixes=()
+  local props="$inst/instance.props" kv key owned
+  (($#)) || return 0
+  # Every declaration is checked before any of them is written. Upserting one
+  # key at a time recorded the keys ahead of a refused one and stopped there,
+  # so `render-config GameWorld=Navezgane ServerPort=1` exited 2 and left
+  # GameWorld declared: the file and the rendered config disagreed, and the
+  # declaration the caller was told had not applied took effect on the next
+  # launch. A refusal now leaves instance.props exactly as it was.
   for kv in "$@"; do
     validate_prop "$kv"
     key="${kv%%=*}"
     for owned in $INSTANCE_OWNED_PROPS; do
       [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
     done
-    prefixes+=("$key=")
   done
-  # One pass over the file drops every replaced declaration, one append adds
-  # the new ones, one sort restores the order. Per key that was three
-  # processes and three rewrites of the whole file.
+  # Upsert by literal prefix, read in the shell rather than through grep:
+  # a key carrying `.`, `*` or `[` used to match (and drop) every other
+  # declaration, losing the instance's whole declared state to one
+  # `sb render-config` call. A newline in the value is refused by
+  # validate_prop above: one declaration is one line.
   #
-  # A literal prefix match, not a regex: a key carrying `.` or `*` used to
-  # match (and drop) every other declaration, losing the instance's whole
-  # declared state to one `sb render-config` call.
-  SB_DROP_PREFIXES="$(IFS=$'\n'; printf '%s' "${prefixes[*]}")" \
-    awk 'BEGIN { n = split(ENVIRON["SB_DROP_PREFIXES"], p, "\n") }
-         { for (i = 1; i <= n; i++) if (p[i] != "" && index($0, p[i]) == 1) next
-           print }' "$props" > "$props.tmp"
-  if (($#)); then printf '%s\n' "$@" >> "$props.tmp"; fi
-  sort -o "$props.tmp" "$props.tmp"
-  mv "$props.tmp" "$props"
+  # One rewrite for the whole call, into a per-pid temp that is removed on
+  # every failure path: the per-key rewrite left an instance.props.tmp behind
+  # when it died mid-loop, and every concurrent call wrote the same temp name,
+  # so two harnesses declaring at once published a blend of both.
+  touch "$props"
+  local -a drops=() kept=()
+  local drop line tmp
+  for kv in "$@"; do drops+=("${kv%%=*}="); done
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    local superseded=0
+    for drop in "${drops[@]}"; do
+      if [[ "$line" == "$drop"* ]]; then superseded=1; break; fi
+    done
+    (( superseded )) || kept+=("$line")
+  done < "$props"
+  kept+=("$@")
+  tmp="$props.tmp.$$"
+  if ! printf '%s\n' "${kept[@]}" > "$tmp"; then
+    rm -f "$tmp"
+    die "could not write $tmp"
+  fi
+  if ! mv "$tmp" "$props"; then
+    rm -f "$tmp"
+    die "could not install $props"
+  fi
+  sort -o "$props" "$props"
 }
 
 # --- commands --------------------------------------------------------------
@@ -950,7 +1016,6 @@ cmd_wipe() {
   fi
   if [[ "$kind" == server ]]; then
     [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
-    rm -rf "$inst/game"
     copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
     prune_instance_mods "$inst"
     write_platform "$inst/game/platform.cfg" Steam
@@ -965,7 +1030,6 @@ cmd_wipe() {
     return 0
   fi
   require_base
-  rm -rf "$inst/game"
   copy_tree "$BASE_GAME" "$inst/game" "base game"
   prune_instance_mods "$inst"
   write_platform "$inst/game/platform.cfg" Local
@@ -1283,9 +1347,13 @@ stage_mods() {
   for src in "$@"; do
     [[ -d "$src" ]] || die "mod source is not a directory: $src"
     [[ -f "$src/ModInfo.xml" ]] || die "not a modlet (no ModInfo.xml): $src"
-    base="${src##*/}"
-    rm -rf "$inst/game/Mods/$base"
-    cp -a "$src" "$inst/game/Mods/$base"
+    base="$(basename "$src")"
+    # Re-staging replaces what was there. Removing the old copy first made a
+    # copy that failed part-way (an unreadable file under the modlet) leave the
+    # instance with no mod at all, so a suite that had staged a working build
+    # and re-staged a broken one lost the working one. copy_tree publishes by
+    # rename, so the old mod survives a failed replacement intact.
+    copy_tree "$src" "$inst/game/Mods/$base" "modlet $base"
     echo "staged $base into $inst/game/Mods"
   done
 }

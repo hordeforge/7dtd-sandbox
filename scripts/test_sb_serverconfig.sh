@@ -105,7 +105,7 @@ sb render-config srv-demo GameWorld=Pregen06k01 >/dev/null
 expect_eq "undeclared property returns to the base template" \
   "$(active_value "$cfg" MaxSpawnedZombies)" "64"
 
-# --- a declared key is a literal, not a pattern ---------------------------
+# --- a refused declaration changes nothing --------------------------------
 
 # The upsert filtered with `grep -v "^$key="`, so the key was a basic regular
 # expression: `.` in one key matched a neighbour's name and deleted a
@@ -134,6 +134,18 @@ for bad in 'Game.World=dot' 'MaxSpawned[Zombies=0'; do
 done
 expect_eq "refused key was not recorded" \
   "$(grep -c '^Game\.World=' "$INST/instance.props" || true)" "0"
+
+# A refusal is all-or-nothing. The upsert wrote one key at a time, so a call
+# refused part-way had already recorded the keys ahead of it:
+# `render-config MaxSpawnedZombies=0 ServerPort=1` exited 2 while leaving
+# MaxSpawnedZombies declared, so instance.props and the rendered config
+# disagreed, and the declaration the caller was told had not applied took
+# effect on the next launch.
+rc=0
+sb render-config srv-demo MaxSpawnedZombies=0 ServerPort=1 >/dev/null 2>&1 || rc=$?
+expect_eq "call refused on an owned key is refused" "$rc" "2"
+expect_eq "refused call recorded no key" \
+  "$(grep -c '^MaxSpawnedZombies=' "$INST/instance.props" || true)" "0"
 
 # instance.props is one KEY=VALUE per line, so a value carrying a newline is
 # two declarations, the second of which is not one. Refused at the point the

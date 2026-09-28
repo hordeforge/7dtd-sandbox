@@ -546,7 +546,9 @@ def test_value_xml_cannot_carry_is_refused(tmp: Path) -> None:
     src.write_text(STOCK, encoding="utf-8")
     dst = tmp / "never.xml"
     for value in ("a\r\nb", "a\x00b", "a\tb"):
-        assert sbconfig.main(["render", str(src), str(dst), "--set", f"ServerName={value}"]) == 2, value
+        assert sbconfig.main(["render", str(src), str(dst), "--set", f"ServerName={value}"]) == 2, (
+            value
+        )
         assert not dst.exists(), f"{value!r} still wrote a config"
     print("PASS value_xml_cannot_carry_is_refused")
 
@@ -560,11 +562,11 @@ def test_insert_skips_a_commented_closer(tmp: Path) -> None:
     only_commented = (
         '<?xml version="1.0"?>\n<ServerSettings>\n'
         '\t<property name="ServerPort" value="26900"/>\n'
-        '\t<!-- </ServerSettings> -->\n</ServerSettings>\n'
+        "\t<!-- </ServerSettings> -->\n</ServerSettings>\n"
     )
     out = render(tmp, "GameWorld=Navezgane", src_text=only_commented)
     assert active_values(out, "GameWorld") == ["Navezgane"], out
-    assert '<!-- </ServerSettings> -->' in out, out
+    assert "<!-- </ServerSettings> -->" in out, out
     print("PASS insert_skips_a_commented_closer")
 
 

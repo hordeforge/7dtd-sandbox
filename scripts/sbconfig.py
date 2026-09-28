@@ -56,7 +56,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-from xml.etree import ElementTree
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape, unescape
 
 # Seeded on every server alongside the declared names, so a server-only create
@@ -89,6 +89,11 @@ FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
 USERS_CLOSER = "</users>"
 
+# First code point XML forbids in an attribute value: everything below is a
+# C0 control, and tab/LF/CR inside the range are attribute-value normalized to
+# a space on parse. xml_attr refuses a value carrying one.
+XML_FIRST_C0 = 0x20
+
 ADMIN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <!-- Safehouse always-admin seed: Local sandbox clients get permission_level=0.
      Regenerated/upserted by `sb` on create-server / launch-server / wipe / run both.
@@ -116,11 +121,9 @@ def xml_attr(text: str) -> str:
     value the game reads back as something other than what was declared. A
     declaration is refused, not silently altered.
     """
-    bad = next((c for c in text if ord(c) < 0x20), None)
+    bad = next((c for c in text if ord(c) < XML_FIRST_C0), None)
     if bad is not None:
-        raise ValueError(
-            f"value carries U+{ord(bad):04X}, which an XML attribute cannot hold"
-        )
+        raise ValueError(f"value carries U+{ord(bad):04X}, which an XML attribute cannot hold")
     return escape(text, {'"': "&quot;"})
 
 
@@ -248,6 +251,15 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
     Decoded with `errors="replace"` on purpose, unlike every file this module
     rewrites: an instance.env is read for its digits and never written back,
     and a byte that will not decode cannot turn into one.
+
+    A file that cannot be read is reported and skipped, not raised. This runs
+    while creating an instance, scanning every other one on the machine, and
+    one of them being root-owned (a base fetched through the container, a
+    tree left by a different uid) used to abort this call with a traceback
+    over somebody else's file, so an unrelated `sb create` failed with a stack
+    trace naming a path the caller had never heard of. Skipping can only cost
+    the probe one block: a collision surfaces as the server failing to bind,
+    which names the port that clashed.
     """
     taken: set[int] = set()
     if not instances.is_dir():
@@ -258,7 +270,12 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
         env = entry / "instance.env"
         if not env.is_file():
             continue
-        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            text = env.read_text(encoding="utf-8", errors="replace")
+        except OSError as ex:
+            print(f"WARN: skipping unreadable {env}: {ex}", file=sys.stderr)
+            continue
+        for line in text.splitlines():
             key, sep, value = line.partition("=")
             if sep and key.strip() == "SERVER_PORT" and value.strip().isdigit():
                 taken.add(int(value.strip()))
@@ -356,15 +373,14 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     permission = re.compile(_ATTR % "permission_level")
     if permission.search(new):
         new = permission.sub(lambda m: m.group(1) + "0" + m.group(3), new, count=1)
+    # No permission_level at all: add it, keeping whichever of the
+    # self-closing and paired forms the depot shipped. Closing the matched
+    # start tag on a paired element would orphan its </user> and leave a
+    # serveradmin.xml no parser accepts.
+    elif old.endswith("/>"):
+        new = old[:-2].rstrip() + ' permission_level="0" />'
     else:
-        # No permission_level at all: add it, keeping whichever of the
-        # self-closing and paired forms the depot shipped. Closing the matched
-        # start tag on a paired element would orphan its </user> and leave a
-        # serveradmin.xml no parser accepts.
-        if old.endswith("/>"):
-            new = old[:-2].rstrip() + ' permission_level="0" />'
-        else:
-            new = old[:-1].rstrip() + ' permission_level="0">'
+        new = old[:-1].rstrip() + ' permission_level="0">'
     if new == old:
         return text, False
     return text[: match.start()] + new + text[match.end() :], True
@@ -416,8 +432,8 @@ def seed_admins(out: Path, names: list[str]) -> bool:
 def _wellformed(text: str) -> bool:
     """True when a strict XML parser accepts `text` as a whole document."""
     try:
-        ElementTree.fromstring(text)
-    except (ElementTree.ParseError, ValueError):
+        ET.fromstring(text)
+    except (ET.ParseError, ValueError):
         return False
     return True
 
