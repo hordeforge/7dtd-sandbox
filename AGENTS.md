@@ -297,8 +297,8 @@ different jobs with different dependencies:
 
 | Target | Base | Carries | For |
 |---|---|---|---|
-| `runtime` | `ubuntu` | graphics/X11/Vulkan, python3, `sb`, `sbconfig.py` | the client under Proton (`make docker`, then `scripts/docker-gui.sh`) |
-| `fetch` | `steamcmd/steamcmd` | steamcmd, python3, `sb`, `sbconfig.py` | `sb fetch-base` into a bind-mounted `base/` (`make docker-fetch`) |
+| `runtime` | `ubuntu` | graphics/X11/Vulkan, python3, `sb`, `sbconfig.py`; runs as `1000:1000` | the client under Proton (`make docker`, then `scripts/docker-gui.sh`) |
+| `fetch` | `steamcmd/steamcmd` | steamcmd, python3, `sb`, `sbconfig.py`; runs as root | `sb fetch-base` into a bind-mounted `base/` (`make docker-fetch`) |
 
 **The runtime image ships no steamcmd.** "No Steam at runtime" is rule 2; an
 image carrying a Steam provisioning toolchain it never invokes contradicts it
@@ -311,6 +311,13 @@ serverconfig render, admin seed and port derivation shells out to it, so an
 image with only `sb` has a CLI whose `create`/`up`/`render-config`/`wipe`
 verbs all fail. `scripts/test_dockerfile.py` gates all of this statically, so
 CI needs no docker.
+
+The runtime image needs no privilege, so it does not run as root; the `fetch`
+image does, for the two named reasons above (the primed steamcmd tree under
+`/root`, and the chown of the bind-mounted `base/` back to the caller). Both
+carry OCI labels, and the version label is `SB_VERSION` fed in as a build arg
+by the `docker` and `docker-fetch` targets, so the image and the CLI cannot
+disagree about which release an image carries.
 
 Game data, instances and Proton stay on the host (bind mounts); neither image
 contains game files. Ports are not published. `docker-gui.sh` forwards a

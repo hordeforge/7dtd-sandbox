@@ -110,11 +110,17 @@ version:
 # runtime carries no steamcmd: "no Steam at runtime" is the product claim, and
 # an image shipping a Steam toolchain it never invokes contradicts it while
 # carrying the supply chain anyway.
+# The image version comes from `sb version`, never from a literal here: the two
+# would drift on the first release bump that misses one of them, and
+# org.opencontainers.image.version is what tells a pulled image which sb it
+# carries. See Dockerfile.safehouse.
+SB_VERSION_ARG = --build-arg SB_VERSION="$$($(SB) version | awk '{print $$2}')"
+
 docker:
-	docker build --target runtime -t $(DOCKER_IMAGE) -f Dockerfile.safehouse .
+	docker build --target runtime $(SB_VERSION_ARG) -t $(DOCKER_IMAGE) -f Dockerfile.safehouse .
 
 docker-fetch:
-	docker build --target fetch -t $(DOCKER_FETCH_IMAGE) -f Dockerfile.safehouse .
+	docker build --target fetch $(SB_VERSION_ARG) -t $(DOCKER_FETCH_IMAGE) -f Dockerfile.safehouse .
 
 # Fetch a base through the container, so the host needs no steamcmd.
 #

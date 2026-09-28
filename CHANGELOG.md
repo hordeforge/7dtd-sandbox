@@ -39,6 +39,12 @@ Nothing is deprecated ahead of removal in this repository today.
 - `docs/THREAT_MODEL.md`: entry points, trust boundaries, assets, threats per
   boundary, existing controls, and the mitigation claims the code does not
   implement, each with a file reference.
+- Both images carry OCI labels (title, description, source, license, version).
+  A `7dtd-safehouse:latest` tag says nothing about the `sb` inside it, so
+  `docker image inspect` is the only place that could. The version label is a
+  build arg fed from `sb version` by the `docker` and `docker-fetch` targets,
+  never a literal in the Dockerfile, and `scripts/test_dockerfile.py` holds the
+  derivation.
 - The Python half of the tree is analyzed and formatted. `ruff.toml` selects
   the correctness rule groups the tree passes, and `make check` runs
   `ruff check` plus `ruff format --check`; `make format` applies the
@@ -69,6 +75,13 @@ Nothing is deprecated ahead of removal in this repository today.
   in the instance's `Saves/` tree, where nothing swept it.
 - `sb doctor` removes its reflink probe file whether the probe copy succeeded
   or failed.
+- The runtime image defaulted to root. `sb` needs no privilege, and
+  `scripts/docker-gui.sh` already pins `--user` to the caller, so a plain
+  `docker run` of that image ran as root where nothing needed it. It runs as
+  `1000:1000` now, with the image's own `/sandbox` (its `SANDBOX_HOME`) handed
+  to that uid. The `fetch` image stays root: steamcmd writes into the tree the
+  base image primed under `/root`, and `make fetch-base-docker` chowns the
+  bind-mounted `base/` back to the caller through `--entrypoint chown`.
 - `sb up` and `sb run both` took their port-wait deadline from the wall clock,
   so an NTP step ended the wait early or extended it by the size of the step
   instead of running the requested `--timeout`. The deadline is elapsed time

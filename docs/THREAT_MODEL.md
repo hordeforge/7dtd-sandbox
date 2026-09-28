@@ -127,7 +127,10 @@ Ranked by exploitability on the deployment this repository actually ships
   host uid. A compromised game process reaches the host IPC namespace and every
   instance in the tree.
 - **Spoofing:** `xhost +local:` disables access control for local X11 socket
-  clients, which is how the container's root reaches the display.
+  clients, which is how the container's user reaches the display. That user is
+  the host uid, pinned by `scripts/docker-gui.sh` and by the runtime image's own
+  `USER` (`Dockerfile.safehouse:136`); the display is not a separate trust
+  boundary from the host account.
 
 ### LAN to sandbox server
 - **Elevation of privilege:** every `SERVER_ADMINS` name joins at

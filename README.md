@@ -257,6 +257,13 @@ Two targets, because provisioning and running are different jobs:
 | `runtime` | `ubuntu` (digest-pinned) | the client under Proton with the host X11 socket, GPU (`/dev/dri`) and ntsync |
 | `fetch` | `steamcmd/steamcmd` (digest-pinned) | `sb fetch-base` into `base/`, without installing steamcmd on the host |
 
+Both images carry OCI labels (`docker image inspect 7dtd-safehouse`), including
+the version, which `make docker` takes from `sb version` rather than from a
+literal. The runtime image runs as uid 1000 and hands its `/sandbox` to that
+uid; `docker-gui.sh` pins `--user` to your uid either way. The `fetch` image
+runs as root, because steamcmd writes into the tree its base image primed under
+`/root` and `make fetch-base-docker` chowns `base/` back to you through it.
+
 The runtime image carries **no steamcmd and no Steam**: that is the product
 claim, and an image shipping a Steam provisioning toolchain it never invokes
 would contradict it while carrying the supply chain anyway. Proton comes from

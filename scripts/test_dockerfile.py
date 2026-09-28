@@ -14,7 +14,9 @@ were wrong before and would be easy to undo:
   by commit SHA: a moved tag is unreviewed code,
 - neither image contains game files,
 - `docker-gui.sh` states the host it forwards from (Linux, an X11 socket, a
-  GPU render node) instead of letting a bind mount fail deep inside docker.
+  GPU render node) instead of letting a bind mount fail deep inside docker,
+- both images carry OCI labels, and the version label is filled from `sb version`
+  rather than a literal, so a pulled image says which `sb` it carries.
 
 Part of ``make test``.
 """
@@ -28,6 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "Dockerfile.safehouse"
 DOCKER_GUI = ROOT / "scripts" / "docker-gui.sh"
+MAKEFILE = ROOT / "Makefile"
 
 FROM_RE = re.compile(r"^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$", re.MULTILINE | re.IGNORECASE)
 
@@ -165,6 +168,91 @@ def test_docker_gui_names_its_host_requirements() -> None:
     print("PASS docker_gui_names_its_host_requirements")
 
 
+def test_images_carry_oci_labels() -> None:
+    """`docker image inspect` has to name what an image carries.
+
+    A tag says `7dtd-safehouse:latest` and nothing about the `sb` inside it, so
+    source, license and version are the only record of what a pulled image is.
+    """
+    for name in ("fetch", "runtime"):
+        body = directives(stage_body(name))
+        for key in (
+            "org.opencontainers.image.title",
+            "org.opencontainers.image.description",
+            "org.opencontainers.image.source",
+            "org.opencontainers.image.licenses",
+        ):
+            assert f"{key}=" in body, f"stage {name} does not label {key}"
+        assert re.search(r"org\.opencontainers\.image\.version=", body), (
+            f"stage {name} does not label org.opencontainers.image.version"
+        )
+    print("PASS images_carry_oci_labels")
+
+
+def test_image_version_is_derived_from_sb_version() -> None:
+    """The version label must not be a second place a version is written.
+
+    A literal in the Dockerfile and SB_VERSION in `sb` drift on the first bump
+    that misses one, and the drift is invisible: the image still builds.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert re.search(r"^ARG SB_VERSION=0\.0\.0-unset$", text, re.M), (
+        "the Dockerfile needs a global ARG SB_VERSION, defaulted to a value "
+        "that cannot pass for a release"
+    )
+    for name in ("fetch", "runtime"):
+        body = directives(stage_body(name))
+        assert re.search(r"^ARG SB_VERSION$", body, re.M), (
+            f"stage {name} must redeclare ARG SB_VERSION to use it in a LABEL"
+        )
+        assert 'org.opencontainers.image.version="${SB_VERSION}"' in body, (
+            f"stage {name} must take its version from the build arg"
+        )
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    assert 'SB_VERSION_ARG = --build-arg SB_VERSION="$$($(SB) version' in makefile, (
+        "the Makefile must pass `sb version` as the build arg, so the version "
+        "home stays SB_VERSION in scripts/sb"
+    )
+    for target, stage in (("docker", "runtime"), ("docker-fetch", "fetch")):
+        pattern = rf"^{target}:\n\tdocker build --target {stage} \$\(SB_VERSION_ARG\) "
+        assert re.search(pattern, makefile, re.M), (
+            f"the {target} target must pass $(SB_VERSION_ARG)"
+        )
+    print("PASS image_version_is_derived_from_sb_version")
+
+
+def test_runtime_is_not_root_and_fetch_stays_root() -> None:
+    """Least privilege, with the one exception that earns it.
+
+    The runtime image runs `sb`, which needs nothing root, so its default user
+    is not root. The fetch image keeps root for two named reasons: steamcmd
+    writes into the primed tree under /root, and `make fetch-base-docker`
+    chowns the bind-mounted base/ back to the caller through `--entrypoint
+    chown`, which a non-root user cannot do.
+    """
+    runtime = directives(stage_body("runtime"))
+    assert re.search(r"^USER 1000:1000$", runtime, re.M), (
+        "the runtime image must not default to root: sb needs no privilege, and "
+        "scripts/docker-gui.sh already pins --user to the caller"
+    )
+    assert "chown 1000:1000 /sandbox" in runtime, (
+        "the image's own SANDBOX_HOME must belong to the user it runs as, so "
+        "`sb create` works in a plain `docker run -v` with no --user"
+    )
+    fetch = directives(stage_body("fetch"))
+    assert not re.search(r"^USER ", fetch, re.M), (
+        "the fetch image must stay root: steamcmd writes into the tree the base "
+        "image primed under /root, and the chown of base/ back to the caller "
+        "needs it"
+    )
+    gui = (ROOT / "scripts" / "docker-gui.sh").read_text(encoding="utf-8")
+    assert '--user "$(id -u):$(id -g)"' in gui, (
+        "docker-gui.sh must keep pinning the caller's uid, so the image's "
+        "default user never decides who owns the instance files"
+    )
+    print("PASS runtime_is_not_root_and_fetch_stays_root")
+
+
 TESTS = (
     test_two_targets_exist,
     test_every_base_is_pinned_by_digest,
@@ -174,6 +262,9 @@ TESTS = (
     test_no_game_files_are_baked_in,
     test_helper_scripts_are_executable_in_the_image,
     test_docker_gui_names_its_host_requirements,
+    test_images_carry_oci_labels,
+    test_image_version_is_derived_from_sb_version,
+    test_runtime_is_not_root_and_fetch_stays_root,
 )
 
 

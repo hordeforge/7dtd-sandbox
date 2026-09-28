@@ -29,8 +29,16 @@
 # Bases are pinned by digest, not by a mutable tag, for the same reason the
 # workflows pin actions by commit SHA: a moved tag is unreviewed code.
 
+# One version home, and it is SB_VERSION in scripts/sb, not this file: `make
+# docker` passes `sb version` in as a build arg. The default below is never the
+# shipped version, so a direct `docker build` is visibly unversioned rather than
+# quietly wrong. scripts/test_dockerfile.py holds the derivation.
+ARG SB_VERSION=0.0.0-unset
+
 # --- fetch: steamcmd only ---------------------------------------------------
 FROM steamcmd/steamcmd@sha256:28633bf41a85592a50dc3aa2ca755be5510a4ba501bc34e28705b00ce7979574 AS fetch
+
+ARG SB_VERSION
 
 # sb shells out to sbconfig.py; python3 is also what steamcmd's wrapper uses.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
@@ -52,6 +60,14 @@ RUN ln -sfn /root/.local/share/Steam/steamcmd /opt/steamcmd
 COPY scripts/sb scripts/sbconfig.py /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/sb /usr/local/bin/sbconfig.py
 
+# OCI labels: `docker image inspect` has to say which sb an image carries, and
+# both images are pushed and pulled by a tag that says nothing else.
+LABEL org.opencontainers.image.title="7dtd-safehouse (fetch)" \
+      org.opencontainers.image.description="Provisions a pristine 7 Days to Die base with steamcmd" \
+      org.opencontainers.image.source="https://github.com/hordeforge/7dtd-sandbox" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${SB_VERSION}"
+
 WORKDIR /sandbox
 # HOME is deliberately NOT overridden here. steamcmd keeps its Steam tree under
 # $HOME, and the upstream image primed /root/.local/share/Steam during build.
@@ -66,6 +82,8 @@ CMD ["help"]
 
 # --- runtime: the client, no steamcmd --------------------------------------
 FROM ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS runtime
+
+ARG SB_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -102,6 +120,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY scripts/sb scripts/sbconfig.py /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/sb /usr/local/bin/sbconfig.py
+
+LABEL org.opencontainers.image.title="7dtd-safehouse (runtime)" \
+      org.opencontainers.image.description="Steam-free 7 Days to Die client and server instances under Proton" \
+      org.opencontainers.image.source="https://github.com/hordeforge/7dtd-sandbox" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${SB_VERSION}"
+
+# Nothing in the runtime image needs root: sb and sbconfig.py are world
+# executable, game trees live on the host, and scripts/docker-gui.sh already
+# pins --user to the caller. /sandbox is the only path the image itself owns
+# and sb writes instances under SANDBOX_HOME, so it is handed to this uid; a
+# direct `docker run -v "$PWD:/sandbox"` with no --user still works.
+RUN mkdir -p /sandbox && chown 1000:1000 /sandbox
+USER 1000:1000
 
 WORKDIR /sandbox
 # No SANDBOX_STEAMCMD: fetching is the `fetch` target's job, and sb refuses a
