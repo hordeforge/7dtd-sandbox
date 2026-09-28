@@ -76,6 +76,7 @@ DEFAULT_ADMIN_NAMES = ("Player", "client", "admin")
 SEED_MARKER = "sbseed"
 
 SETTINGS_CLOSER = "</ServerSettings>"
+USERS_CLOSER = "</users>"
 
 # Server port blocks: ServerPort (game, UDP+TCP), +1 telnet, +2..+4 spare (the
 # dedicated opens a few ephemeral ports around ServerPort, and loadgen bots
@@ -100,7 +101,6 @@ MIN_PYTHON = (3, 8)
 FNV_OFFSET_BASIS = 0x811C9DC5
 FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
-USERS_CLOSER = "</users>"
 
 # First code point XML 1.0 forbids in a character, and the floor `xml_attr`
 # refuses a declaration below: everything under it is a C0 control, and
@@ -622,18 +622,15 @@ def _atomic_write(path: Path, text: str) -> None:
             print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
         tmp.replace(path)
     except OSError as ex:
-        # A failed write leaves a partial temp file in the instance's Saves
-        # tree. Nothing ever sweeps it, so a long-lived lab accumulates one per
-        # failed seed, and a reader globbing serveradmin.xml* finds the debris.
-        tmp.unlink(missing_ok=True)
         raise RuntimeError(f"cannot write {path}: {ex}") from ex
-    except BaseException:
-        # A Ctrl-C mid-write raises KeyboardInterrupt, and a SystemExit can land
-        # here too: the same partial file, on a path no OSError arm ever sees.
-        # A harness driving a suite from a terminal is interrupted often enough
-        # for one debris file per run to matter in the instance's Saves tree.
+    finally:
+        # A write that did not reach the rename left a partial temp file in the
+        # instance's Saves tree. Nothing ever sweeps it, so a long-lived lab
+        # accumulates one per failed seed, and a reader globbing
+        # serveradmin.xml* finds the debris. A KeyboardInterrupt mid-write, and
+        # a SystemExit, land on the same debris on a path no OSError arm sees.
+        # missing_ok, because the success path already renamed the temp away.
         tmp.unlink(missing_ok=True)
-        raise
 
 
 def _parse_sets(items: list[str]) -> dict[str, str]:

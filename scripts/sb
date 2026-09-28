@@ -901,21 +901,16 @@ instance_marker() {
   fi
 }
 
-# The pids behind one marker, without the marker column: what stop, destroy,
-# wipe and the running-instance guard consume (kill takes a pid, not a
-# "<marker>\t<pid>" line).
-pids_for_marker() {
+# Running pids for an instance of either kind, one per line and without the
+# marker column: what stop, destroy, wipe and the running-instance guard
+# consume (kill takes a pid, not a "<marker>\t<pid>" line).
+instance_procs() {
   local marker pid
   while IFS=$'\t' read -r marker pid || [[ -n "$marker" ]]; do
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
     fi
-  done < <(pids_for_markers "$1")
-}
-
-# Running pids for an instance of either kind.
-instance_procs() {
-  pids_for_marker "$(instance_marker "$1")"
+  done < <(pids_for_markers "$(instance_marker "$1")")
 }
 
 # --- client commands -------------------------------------------------------
@@ -1815,13 +1810,11 @@ cmd_stop() {
   local name="$1" inst
   validate_name "$name"
   inst="$INSTANCES_DIR/$name"
-  if [[ ! -d "$inst" ]]; then
-    echo "sb: instance '$name' is not running" >&2
-    return 0
+  local pids=()
+  if [[ -d "$inst" ]]; then
+    mapfile -t pids < <(instance_procs "$inst")
   fi
-  local pids
-  mapfile -t pids < <(instance_procs "$inst")
-  if [[ ${#pids[@]} -eq 0 ]]; then
+  if ((${#pids[@]} == 0)); then
     echo "sb: instance '$name' is not running" >&2
     return 0
   fi
@@ -2108,7 +2101,6 @@ cmd_up() {
 # game/Mods itself. Sources are directories containing ModInfo.xml.
 cmd_stage() {
   local name="$1"; shift || true
-  [[ $# -ge 1 ]] || usage_err "usage: sb stage <name> <mod-dir> [mod-dir...]"
   local inst
   inst="$(instance_dir "$name")"
   stage_mods "$inst" "$@"
@@ -2121,7 +2113,6 @@ cmd_stage() {
 # declared now, not on what a previous run left behind.
 cmd_render_config() {
   local name="$1"; shift || true
-  [[ $# -ge 1 ]] || usage_err "usage: sb render-config <name> KEY=VALUE [KEY=VALUE...]"
   local inst kv
   inst="$(instance_dir "$name")"
   for kv in "$@"; do
