@@ -27,7 +27,11 @@ make test              # every gate; no game, no Proton, no steamcmd needed
 shellcheck (`.shellcheckrc`) over the shell, `ruff check` and
 `ruff format --check` (`ruff.toml`) over the Python, and `python -m
 compileall`. Shellcheck and ruff are both required rather than skipped when
-CI cannot find them. `make format` applies ruff's formatting.
+CI cannot find them, and both are pinned: `RUFF_VERSION`, `SHELLCHECK_VERSION`
+and `SHELLCHECK_PY_VERSION` in the Makefile are the version home that CI
+installs from, and a `make check` that finds a different one installed says
+which version it wants and how to get it. `make format` applies ruff's
+formatting.
 
 Requirements: a Linux host (x86-64), `bash`, and `python3` 3.8 or newer on
 `PATH` for `scripts/sbconfig.py` (the serverconfig renderer, admin seeder and

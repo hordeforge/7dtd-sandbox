@@ -413,11 +413,15 @@ client hangs during early Unity init (see README); use the native
     Shellcheck and ruff are both required in CI (the check errors out rather
     than skipping when either is missing there) and both are named
     explicitly on the command line, so a stray rc file elsewhere on the
-    machine cannot loosen the gate. CI installs ruff at the version in
-    `.github/workflows/ci.yml`; use that one locally, or `make format` is a
-    diff somebody else has to absorb. A rule the tree does not pass is not
-    enabled: an analyzer that fires on every line gets ignored, which is worse
-    than the defect it was meant to catch.
+    machine cannot loosen the gate. Both are pinned in the Makefile
+    (`RUFF_VERSION`, `SHELLCHECK_VERSION`, `SHELLCHECK_PY_VERSION`, the
+    version home for both), CI installs those pins by reading them out of the
+    Makefile rather than repeating them, and `check-analyzer-versions` holds
+    the installed analyzer to the pin: a note locally, fatal in CI. Use the
+    pinned one locally, or `make format` is a diff somebody else has to
+    absorb. A rule the tree does not pass is not enabled: an analyzer that
+    fires on every line gets ignored, which is worse than the defect it was
+    meant to catch.
 
 ## Fetching the bases
 

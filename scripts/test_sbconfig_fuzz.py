@@ -120,7 +120,7 @@ def _user_fragment(rng: random.Random, name: str) -> str:
     attrs = [
         f'platform="{platform}"',
         f'userid="{name}"',
-        'name="{}"'.format(rng.choice((name, "Player", "steamer"))),
+        f'name="{rng.choice((name, "Player", "steamer"))}"',
     ]
     if level:
         attrs.append(f'permission_level="{level}"')
@@ -174,9 +174,7 @@ def _serverconfig_input(rng: random.Random) -> str:
         parts = [_serverconfig_fragment(rng) for _ in range(rng.randrange(1, MAX_FRAGMENTS))]
         if rng.random() < 0.9:
             parts.insert(rng.randrange(len(parts) + 1), "</ServerSettings>")
-        body = '<?xml version="1.0"?>\n<ServerSettings>\n{}\n</ServerSettings>\n'.format(
-            "\n".join(parts)
-        )
+        body = f'<?xml version="1.0"?>\n<ServerSettings>\n{"\n".join(parts)}\n</ServerSettings>\n'
     return body if rng.random() < 0.5 else _mutate(rng, body)
 
 
@@ -188,8 +186,9 @@ def _serveradmin_input(rng: random.Random, names: list[str]) -> str:
         if rng.random() < 0.9 and not any(p.strip() == "</users>" for p in parts):
             parts.append("  </users>")
         body = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n'
-            "  <users>\n{}\n  </users>\n</adminTools>\n".format("\n".join(parts))
+            '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>'
+            + "\n".join(parts)
+            + "\n  </users>\n</adminTools>\n"
         )
     return body if rng.random() < 0.5 else _mutate(rng, body)
 
@@ -347,18 +346,20 @@ def check_serveradmin(doc: str, names: list[str], tmp: Path) -> None:
 def run(name: str, build, check, iterations: int, seed: int) -> int:
     findings: list[Finding] = []
     for index in range(iterations):
-        doc, payload = build(random.Random(seed + index))
+        # S311: seeded from --seed, so the corpus is reproducible rather than
+        # unpredictable. Cryptographic strength is not a property a fuzzer wants.
+        doc, payload = build(random.Random(seed + index))  # noqa: S311
 
         # payload is bound as a default argument, not closed over: `reproduce`
         # has to keep checking *this* iteration's payload. A shrinker that ran
         # after the loop advanced would otherwise re-check the shrunk document
         # against the next iteration's payload and report a reproducer that
         # does not reproduce.
-        def reproduce(candidate: str, payload: str = payload) -> bool:
+        def reproduce(candidate: str, expected: list[str] = payload) -> bool:
             with tempfile.TemporaryDirectory() as td:
                 try:
-                    check(candidate, payload, Path(td))
-                except Exception:
+                    check(candidate, expected, Path(td))
+                except Exception:  # any failure at all is a finding, not a crash
                     return True
             return False
 
@@ -367,9 +368,9 @@ def run(name: str, build, check, iterations: int, seed: int) -> int:
                 check(doc, payload, Path(td))
             except Finding as ex:
                 ex.iteration = index
-                ex.doc = _shrink(random.Random(seed + index), ex.doc, reproduce)
+                ex.doc = _shrink(random.Random(seed + index), ex.doc, reproduce)  # noqa: S311
                 findings.append(ex)
-            except Exception as ex:
+            except Exception as ex:  # uncaught means the parser broke, not that the input was bad
                 escaped = Finding(f"uncaught {type(ex).__name__}: {ex}", "")
                 escaped.iteration = index
                 findings.append(escaped)

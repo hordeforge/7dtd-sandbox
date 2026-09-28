@@ -27,17 +27,34 @@ jobs:
       # would otherwise run unreviewed code here with the workflow token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # ruff, the Python analyzer `make check` requires. Pinned to an exact
-      # version, and to the release commit of the action rather than its
-      # mutable tag, for the same reason the checkout above is: a moved tag
-      # would run unreviewed code in this workflow. It is a tool, not a
-      # dependency of the shipped code: nothing under scripts/ imports it, and
-      # the game images do not carry it.
+      # The two analyzers `make check` runs, at the version the Makefile
+      # pins. The workflow reads RUFF_VERSION, SHELLCHECK_VERSION and
+      # SHELLCHECK_PY_VERSION out of the Makefile rather than repeating the
+      # numbers, so a bump is one edit and the two cannot disagree
+      # (scripts/test_sb_cli.sh holds that agreement on every push).
+      #
+      # Both are tools, not dependencies of the shipped code: nothing under
+      # scripts/ imports either, and the game images carry neither. They are
+      # pinned for the same reason the checkout above is pinned to a release
+      # commit: a version nobody chose is a version nobody reviewed, and a
+      # runner's preinstalled analyzer is exactly that (it moves with the
+      # runner image). shellcheck-py is the distribution channel: it ships the
+      # pinned ShellCheck binary as a `shellcheck` script, so the shell half of
+      # the gate is pinned the same way the Python half is.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
-      - name: Install the pinned ruff (the Python analyzer make check requires)
+      - name: Install the pinned analyzers (the ones make check requires)
         run: |
-          uv tool install ruff==0.16.4
+          ruff_version="$(sed -n 's/^RUFF_VERSION := //p' Makefile | head -1)"
+          shellcheck_py_version="$(sed -n 's/^SHELLCHECK_PY_VERSION := //p' Makefile | head -1)"
+          test -n "$ruff_version" && test -n "$shellcheck_py_version" \
+            || { echo "ERROR: the Makefile no longer pins RUFF_VERSION/SHELLCHECK_PY_VERSION" >&2; exit 1; }
+          uv tool install "ruff==$ruff_version"
+          uv tool install "shellcheck-py==$shellcheck_py_version"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          shellcheck --version
+          ruff --version
+          test "$(shellcheck --version | awk '/^version:/{print $2}')" \
+            = "$(sed -n 's/^SHELLCHECK_VERSION := //p' Makefile | head -1)"
 
       # Through make, never an inline copy, so CI cannot drift from dev
       # (REPOSITORY_STANDARDS.md section 5). `check` is the static verdict

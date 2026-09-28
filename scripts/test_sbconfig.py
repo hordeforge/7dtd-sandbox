@@ -546,9 +546,8 @@ def test_value_xml_cannot_carry_is_refused(tmp: Path) -> None:
     src.write_text(STOCK, encoding="utf-8")
     dst = tmp / "never.xml"
     for value in ("a\r\nb", "a\x00b", "a\tb"):
-        assert sbconfig.main(["render", str(src), str(dst), "--set", f"ServerName={value}"]) == 2, (
-            value
-        )
+        rc = sbconfig.main(["render", str(src), str(dst), "--set", f"ServerName={value}"])
+        assert rc == EXIT_USAGE, value
         assert not dst.exists(), f"{value!r} still wrote a config"
     print("PASS value_xml_cannot_carry_is_refused")
 

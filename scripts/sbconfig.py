@@ -89,9 +89,10 @@ FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
 USERS_CLOSER = "</users>"
 
-# First code point XML forbids in an attribute value: everything below is a
-# C0 control, and tab/LF/CR inside the range are attribute-value normalized to
-# a space on parse. xml_attr refuses a value carrying one.
+# First code point XML 1.0 forbids in a character, and the floor `xml_attr`
+# refuses a declaration below: everything under it is a C0 control, and
+# tab/LF/CR inside the range are attribute-value normalized to a space on
+# parse. xml_attr refuses a value carrying one.
 XML_FIRST_C0 = 0x20
 
 ADMIN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -432,6 +433,12 @@ def seed_admins(out: Path, names: list[str]) -> bool:
 def _wellformed(text: str) -> bool:
     """True when a strict XML parser accepts `text` as a whole document."""
     try:
+        # S314 is ignored for this file in ruff.toml, with the same reasoning:
+        # the input is the depot's serverconfig and, under the fuzz gate, a
+        # mutated copy of it, so it is untrusted by definition. defusedxml is
+        # a dependency this repository does not have, and the expansion blowup
+        # it warns about is already bounded: every call runs under the fuzz
+        # gate's per-call time budget, and a doc that overruns it is a finding.
         ET.fromstring(text)
     except (ET.ParseError, ValueError):
         return False

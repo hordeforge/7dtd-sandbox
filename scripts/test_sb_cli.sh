@@ -401,6 +401,27 @@ no_py="$(env SANDBOX_HOME="$TMP" SB_PY=sbconfig.py-no-such-interpreter "$SB" ren
 grep -qF "not on PATH" <<<"$no_py" \
   || { echo "FAIL: a missing interpreter was not named: $no_py" >&2; fail=1; }
 
+# --- analyzer contract ------------------------------------------------------
+
+# The analyzers `make check` runs are pinned in the Makefile, and CI installs
+# those pins rather than repeating the numbers. A CI that installs a different
+# version than the Makefile names, or that falls back to the runner image's
+# preinstalled one, is a gate whose verdict nobody chose, so the workflow is
+# held to reading the pins here.
+ci_yml="$ROOT/.github/workflows/ci.yml"
+for pin in RUFF_VERSION SHELLCHECK_PY_VERSION SHELLCHECK_VERSION; do
+  grep -qE "^$pin := [0-9]+\.[0-9]+" "$ROOT/Makefile" \
+    || { echo "FAIL: the Makefile does not pin $pin" >&2; fail=1; }
+  grep -q "s/^$pin := /" "$ci_yml" \
+    || { echo "FAIL: ci.yml does not install the pinned $pin from the Makefile" >&2; fail=1; }
+done
+# No version literal of its own: a bump that edits only the workflow passes
+# this gate and puts the two back out of step.
+if grep -nE '(ruff|shellcheck-py)==[0-9]' "$ci_yml"; then
+  echo "FAIL: ci.yml carries a literal analyzer version rather than the Makefile pin" >&2
+  fail=1
+fi
+
 # The launch path recognises a caller-supplied -screen-* argument with a bash
 # scan, so no GNU-only null-input grep sits between sb and the game.
 # shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main

@@ -50,33 +50,25 @@ ignore = [
 [lint.per-file-ignores]
 # The gates are plain scripts driven by `make test`, not a pytest suite, and
 # they assert with `assert` and report with `print` because that is how the
-# other gates in scripts/test_*.sh report too. S314 is off here because the
-# XML they parse is what sbconfig.py just rendered into a temp dir, not input
-# from anywhere untrusted.
+# other gates in scripts/test_*.sh report too.
 #
-# PLR2004 and S311 are off for the same reason PLC already is. PLR2004 wants
-# every seed probability, randrange bound and expected exit code lifted into a
-# named constant: in a fuzzer those numbers *are* the specification of what is
-# being generated, and naming them one constant at a time reads worse than the
-# literal while asserting nothing. S311 wants a CSPRNG for `random.Random`,
-# whose entire job here is a reproducible seed, which is the opposite of what
-# the rule is protecting.
+# S314 and PLR2004 are off because the paths and XML a gate names are text it
+# reads out of another file or renders into a temp dir, not input from
+# anywhere untrusted, and in a gate the literals are the data: a fuzz corpus's
+# shape weights and an asserted exit code are what the case is, and naming each
+# one would only move the number somewhere else. S108 and S311 are not listed
+# here: the two lines that need them carry their own `noqa`, with the reason on
+# the line above, which is where a one-file exception belongs.
 "scripts/test_*.py" = [
     "S101",
-    "T201",
-    "PT",
-    "PLC",
-    "PLR2004",
-    "S311",
+    "S314",
     "S603",
     "S607",
-    "S314",
+    "T201",
+    "PLC",
+    "PLR2004",
+    "PT",
 ]
-# S108 wants a random temp path for every /tmp literal. The one in the
-# Dockerfile gate is the X11 socket directory docker-gui.sh binds, spelled
-# exactly as it has to appear in a Dockerfile, and it is an assertion about
-# the image rather than somewhere the gate writes.
-"scripts/test_dockerfile.py" = ["S108"]
 # S314 wants defusedxml for every ElementTree parse. The only parse left is
 # _wellformed()'s "would an XML parser accept this serveradmin.xml at all",
 # over a file the sandbox itself wrote a moment earlier. It is the same

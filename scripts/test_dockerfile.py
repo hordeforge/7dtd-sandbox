@@ -226,9 +226,17 @@ def test_image_version_is_derived_from_sb_version() -> None:
             f"stage {name} must take its version from the build arg"
         )
     makefile = MAKEFILE.read_text(encoding="utf-8")
-    assert 'SB_VERSION_ARG = --build-arg SB_VERSION="$$($(SB) version' in makefile, (
-        "the Makefile must pass `sb version` as the build arg, so the version "
-        "home stays SB_VERSION in scripts/sb"
+    assert re.search(r"^SB_VERSION = \$\(shell \$\(SB\) version", makefile, re.MULTILINE), (
+        "the Makefile must read the image version from `sb version`, so the "
+        "version home stays SB_VERSION in scripts/sb"
+    )
+    # A command substitution that fails expands to nothing and carries no exit
+    # status, so an unguarded build arg labels the image with a blank version
+    # and docker build reports success. The guard has to be here, not in the
+    # Dockerfile, which cannot tell an unset ARG from a deliberately empty one.
+    assert "$(error $(SB) version printed no version" in makefile, (
+        "the SB_VERSION build arg must abort the build when `sb version` yields "
+        "nothing rather than labelling the image with an empty version"
     )
     for target, stage in (("docker", "runtime"), ("docker-fetch", "fetch")):
         pattern = rf"^{target}:\n\tdocker build --target {stage} \$\(SB_VERSION_ARG\) "

@@ -91,6 +91,24 @@ Nothing is deprecated ahead of removal in this repository today.
   outside `[A-Za-z_][A-Za-z0-9_]*` first, so the gate died on its own setup
   line. It now proves the same defect is unreachable through a key that is
   legal, and that the upsert spares the neighbouring declaration.
+- `make check` passes again on the tree as committed. The fuzz gate
+  (`scripts/test_sbconfig_fuzz.py`) landed with 51 findings under the pinned
+  ruff, so the static verdict was red on a clean checkout: percent formatting,
+  over-long lines, a closure over a loop variable, dead `noqa` directives and
+  a file with a shebang and no execute bit. The gate was never run against the
+  file that introduced it, and `make check` is the interface every contributor
+  and the CI job share, so a red one hides the findings it exists to report.
+- Both analyzers are pinned, and CI installs the pins. The version home is
+  `RUFF_VERSION` / `SHELLCHECK_VERSION` / `SHELLCHECK_PY_VERSION` in the
+  Makefile, which `.github/workflows/ci.yml` reads rather than repeating; the
+  shell half came from whatever shellcheck the runner image happened to carry,
+  so the shell gate was a moving target. `make check` now names the pinned
+  version and how to install it: a note locally, fatal in CI.
+- `make docker` / `make docker-fetch` refuse to build when `sb version` yields
+  nothing. The version reached the image as a command substitution, so a
+  failure expanded to `--build-arg SB_VERSION=""`, which labels the image with
+  a blank version and lets `docker build` report success. That label is the
+  only record of which `sb` a pulled image carries.
 - A `sb up` (or `sb run both`) that times out waiting for the game port stops
   the server it started. That server was already detached and already holding
   its port block, so a harness retrying against a wedged instance left another
