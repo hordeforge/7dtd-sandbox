@@ -6,7 +6,7 @@ One implementation for the whole workspace. `sb` calls it; sibling harnesses
 each carrying its own XML rewriter.
 
   sbconfig.py render SRC DST [--userdata PATH] [--set KEY=VALUE ...]
-  sbconfig.py seed-admins USERDATA --name NAME [--name NAME ...]
+  sbconfig.py seed-admins USERDATA < names        (one name per line on stdin)
   sbconfig.py port-block NAME [--instances DIR] [--taken PORT ...]
   sbconfig.py get CFG KEY
 
@@ -19,7 +19,11 @@ world name can never terminate the attribute and inject further properties.
 A key the template does not name at all is warned about on stderr: it would be
 inserted and then read by nobody.
 
-seed-admins upserts a `permission_level="0"` Local entry for each --name given.
+seed-admins upserts a `permission_level="0"` Local entry for each name read
+from stdin, one per line. The names arrive on stdin rather than as arguments
+because an argument is world-readable through /proc/<pid>/cmdline for as long
+as the process lives, which publishes the player names this file admits to
+every account on the host.
 Stock auth maps PltfmId `Local_<playername>` to platform="Local"
 userid=<playername>; without a seed a Local join lands at permission 1000 and
 cannot run dm/givetools. The names are declared by the instance
@@ -482,8 +486,17 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def declared_admin_names(text: str) -> list[str]:
+    """The admin names a caller declared on stdin, one per line.
+
+    Blank lines are dropped, so a trailing newline in the here-doc or a pipe
+    that ends with one does not seed an empty userid the game could match.
+    """
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def cmd_seed_admins(args: argparse.Namespace) -> int:
-    names = list(dict.fromkeys([*args.names, *DEFAULT_ADMIN_NAMES]))
+    names = list(dict.fromkeys([*declared_admin_names(sys.stdin.read()), *DEFAULT_ADMIN_NAMES]))
     try:
         changed = seed_admins(args.userdata / "Saves" / "serveradmin.xml", names)
     except (OSError, RuntimeError, ValueError) as ex:
@@ -550,16 +563,11 @@ def main(argv: list[str] | None = None) -> int:
     render_cmd.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE")
     render_cmd.set_defaults(func=cmd_render)
 
-    seed_cmd = sub.add_parser("seed-admins", help="upsert declared Local admins")
-    seed_cmd.add_argument("userdata", type=Path)
-    seed_cmd.add_argument(
-        "--name",
-        dest="names",
-        action="append",
-        default=[],
-        metavar="NAME",
-        help="Local player name to admit as permission_level=0 (repeatable)",
+    seed_cmd = sub.add_parser(
+        "seed-admins",
+        help="upsert declared Local admins, read one name per line from stdin",
     )
+    seed_cmd.add_argument("userdata", type=Path)
     seed_cmd.set_defaults(func=cmd_seed_admins)
 
     port_cmd = sub.add_parser("port-block", help="this instance's 5-port block")

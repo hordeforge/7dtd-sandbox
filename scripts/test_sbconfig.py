@@ -157,13 +157,72 @@ def test_missing_template_names_the_file(tmp: Path) -> None:
     print("PASS missing_template_names_the_file")
 
 
-def _seed(tmp: Path, *names: str) -> str:
-    ud = tmp / "userdata"
+@contextlib.contextmanager
+def _stdin(text: str):
+    """Swap sys.stdin for a fixed string.
+
+    contextlib.redirect_stdin needs 3.10 and the module under test supports
+    3.7, so the swap is done by hand: sbconfig reads sys.stdin at call time.
+    """
+    saved = sys.stdin
+    sys.stdin = io.StringIO(text)
+    try:
+        yield
+    finally:
+        sys.stdin = saved
+
+
+def _seed_argv(ud: Path, *names: str) -> int:
+    """`seed-admins` with the names on stdin, the way `sb` calls it.
+
+    argparse refuses an unknown option by raising SystemExit, so the code is
+    caught here rather than ending the gate on the first refusal.
+    """
     argv = ["seed-admins", str(ud)]
-    for name in names:
-        argv += ["--name", name]
-    assert sbconfig.main(argv) == 0
-    return (ud / "Saves" / "serveradmin.xml").read_text(encoding="utf-8")
+    stdin = "".join(f"{name}\n" for name in names)
+    try:
+        with _stdin(stdin):
+            return sbconfig.main(argv)
+    except SystemExit as ex:
+        return int(ex.code or 0)
+
+
+def _seed(tmp: Path, *names: str) -> str:
+    assert _seed_argv(tmp / "userdata", *names) == 0
+    return (tmp / "userdata" / "Saves" / "serveradmin.xml").read_text(encoding="utf-8")
+
+
+def test_seed_takes_no_name_argument(tmp: Path) -> None:
+    """The names go on stdin, never in argv.
+
+    An argument is readable through /proc/<pid>/cmdline by every account on
+    the host, so a `--name` spelling would publish the player names a server
+    admits for the lifetime of the process. The option is refused rather than
+    ignored, so a caller still passing it fails loudly instead of seeding
+    nothing.
+    """
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        try:
+            rc = sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "client-x"])
+        except SystemExit as ex:
+            rc = int(ex.code or 0)
+    assert rc == EXIT_USAGE, f"expected a refusal ({EXIT_USAGE}), got {rc}"
+    assert "unrecognized arguments" in err.getvalue(), err.getvalue()
+    seeded = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    assert not seeded.exists(), "a refused seed wrote a file"
+    print("PASS seed_takes_no_name_argument")
+
+
+def test_seed_reads_names_from_stdin(tmp: Path) -> None:
+    """Blank lines around the names do not seed an empty userid."""
+    ud = tmp / "userdata"
+    with _stdin("\nclient-sg\n\n"):
+        assert sbconfig.main(["seed-admins", str(ud)]) == 0
+    root = ET.fromstring((ud / "Saves" / "serveradmin.xml").read_text(encoding="utf-8"))
+    ids = {u.get("userid") for u in root.iter("user")}
+    assert "client-sg" in ids, ids
+    assert "" not in ids, ids
+    print("PASS seed_reads_names_from_stdin")
 
 
 def test_seeds_only_declared_names(tmp: Path) -> None:
@@ -337,8 +396,8 @@ def test_seed_rewrites_a_differently_spelled_admin(tmp: Path) -> None:
         "  </users>\n</adminTools>\n",
         encoding="utf-8",
     )
-    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "istanbul"]) == 0
-    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "Café"]) == 0
+    assert _seed_argv(tmp / "userdata", "istanbul") == 0
+    assert _seed_argv(tmp / "userdata", "Café") == 0
     root = ET.fromstring(admin.read_text(encoding="utf-8"))
     local = [u for u in root.iter("user") if u.get("platform") == "Local"]
     by_id: dict[str, str | None] = {}
@@ -350,8 +409,8 @@ def test_seed_rewrites_a_differently_spelled_admin(tmp: Path) -> None:
     assert not [u for u in local if u.get("userid", "").startswith("Cafe")], by_id
     # Reseeding the same declaration must not churn the file.
     before = admin.read_bytes()
-    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "istanbul"]) == 0
-    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "Café"]) == 0
+    assert _seed_argv(tmp / "userdata", "istanbul") == 0
+    assert _seed_argv(tmp / "userdata", "Café") == 0
     assert admin.read_bytes() == before, "reseed rewrote an already-correct file"
     print("PASS seed_rewrites_a_differently_spelled_admin")
 
@@ -390,7 +449,7 @@ def test_seed_refuses_a_non_utf8_admin_file(tmp: Path) -> None:
         "  </users>\n</adminTools>\n"
     ).encode("latin-1")
     admin.write_bytes(original)
-    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "client-x"]) == 1
+    assert _seed_argv(tmp / "userdata", "client-x") == 1
     assert admin.read_bytes() == original, "a non-UTF-8 admin file was rewritten"
     print("PASS seed_refuses_a_non_utf8_admin_file")
 
@@ -519,6 +578,8 @@ TESTS = (
     test_rerun_is_byte_identical_and_never_appends,
     test_bad_set_fails_closed,
     test_missing_template_names_the_file,
+    test_seed_takes_no_name_argument,
+    test_seed_reads_names_from_stdin,
     test_seeds_only_declared_names,
     test_seed_upserts_demoted_admin,
     test_seed_is_idempotent,

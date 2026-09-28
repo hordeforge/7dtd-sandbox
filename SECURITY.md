@@ -52,6 +52,14 @@ they manage is [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 - **The generated serverconfig is `0600`.** It can carry `TelnetPassword`
   (a harness renders one per run), so `sbconfig.py render` restricts the file
   it writes rather than inheriting the caller's umask.
+- **`instance.env` is `0600`.** A server's copy carries `SERVER_ADMINS`, the
+  Local player names that server admits, so the mode is applied on every
+  server bring-up rather than at create time alone: an instance written by an
+  earlier version is restricted the next time it is seeded.
+- **Declared admin names are not passed in argv.** `sbconfig.py seed-admins`
+  reads them from stdin, one per line, because an argument is readable through
+  `/proc/<pid>/cmdline` by every account on the host. The `--name` spelling is
+  refused (exit 2) rather than ignored.
 - **Instance configs are not committed.** `instances/` is gitignored in full.
 
 ## Values that are test-only

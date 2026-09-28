@@ -252,6 +252,19 @@ ensure_local_platform() {
   echo "instance platform.cfg set to Local (no Steam auth, no EOS)"
 }
 
+# instance.env is the contract a caller sources or evals, and on a server it
+# carries SERVER_ADMINS: the Local player names that server admits. The two
+# files those names reach serveradmin.xml and serverconfig.xml are both
+# written 0600; this one was left to the umask, so a 022 shell left every
+# player name on the host readable to every account. User-only, like the rest
+# of what it names.
+restrict_instance_env() {
+  local env_file="$1/instance.env"
+  [[ -f "$env_file" ]] || return 0
+  chmod 0600 "$env_file" 2>/dev/null \
+    || warn "could not restrict $env_file to 0600 (check the filesystem's mode support)"
+}
+
 # Always-admin for Local sandbox clients. Stock auth maps PltfmId
 # `Local_<playername>` to platform="Local" userid=<playername>. Without a
 # seed, Local joins land as permission 1000 and cannot run dm/givetools. The
@@ -260,17 +273,23 @@ ensure_local_platform() {
 # creates the file if missing, otherwise upserts a level-0 Local entry per
 # declared name.
 seed_sandbox_admins() {
-  local inst="$1" declared name args=()
+  local inst="$1" declared name
   declared="$(env_value "$inst" SERVER_ADMINS)"
   # An instance created before SERVER_ADMINS existed still gets its pair name.
   [[ -n "$declared" ]] || declared="$(default_server_admins "${inst##*/}")"
-  local IFS=,
-  for name in $declared; do
-    [[ -n "$name" ]] && args+=(--name "$name")
-  done
-  unset IFS
   require_python
-  "$SB_PY" "$SB_CONFIG" seed-admins "$inst/userdata" "${args[@]}"
+  # The names go in on stdin, never as arguments: an argument is readable
+  # through /proc/<pid>/cmdline by every account on the host for as long as
+  # the process lives, which publishes the player names this server admits.
+  # This runs on every server bring-up, so an instance.env written before the
+  # guard existed is restricted too, not only the ones created after it.
+  restrict_instance_env "$inst"
+  {
+    local IFS=,
+    for name in $declared; do
+      if [[ -n "$name" ]]; then printf '%s\n' "$name"; fi
+    done
+  } | "$SB_PY" "$SB_CONFIG" seed-admins "$inst/userdata"
 }
 
 
@@ -879,6 +898,7 @@ LOGFILE=$inst/logs/output_log_client.txt
 SB_RES=$res
 SB_FULLSCREEN=$fullscreen
 EOF
+  restrict_instance_env "$inst"
   echo "initializing Proton prefix (first run; one-time cost)..."
   if ( cd "$inst/game" \
        && env STEAM_COMPAT_DATA_PATH="$inst/compatdata" \

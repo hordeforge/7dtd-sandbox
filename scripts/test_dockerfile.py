@@ -177,7 +177,9 @@ def test_docker_gui_names_its_host_requirements() -> None:
     checked (and named in the message) before the container starts.
     """
     text = DOCKER_GUI.read_text(encoding="utf-8")
-    for required in ("uname -s", "/dev/dri", "/tmp/.X11-unix", "DISPLAY"):
+    # The X11 socket path is a string this gate looks for in docker-gui.sh,
+    # not a temporary file this test creates.
+    for required in ("uname -s", "/dev/dri", "/tmp/.X11-unix", "DISPLAY"):  # noqa: S108
         assert required in text, f"docker-gui.sh does not check {required}"
     print("PASS docker_gui_names_its_host_requirements")
 

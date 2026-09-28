@@ -123,14 +123,16 @@ mv "$INST/props.new" "$INST/instance.props"
 sb render-config srv-demo GameWorld=dotted >/dev/null
 
 # A serverconfig names its properties [A-Za-z_][A-Za-z0-9_]*, so a
-# pattern-shaped key is refused instead, and the declarations beside it
-# survive.
+# pattern-shaped key is refused where it is written rather than recorded, and
+# the declarations beside it survive.
 for bad in 'Game.World=dot' 'MaxSpawned[Zombies=0'; do
   rc=0
   sb render-config srv-demo "$bad" >/dev/null 2>&1 || rc=$?
   expect_eq "pattern-shaped key '$bad' refused"       "$rc" "2"
   expect_eq "refused key spared its neighbour" "$(active_value "$cfg" GameWorld)" "dotted"
 done
+expect_eq "refused key was not recorded" \
+  "$(grep -c '^Game\.World=' "$INST/instance.props" || true)" "0"
 
 # instance.props is one KEY=VALUE per line, so a value carrying a newline is
 # two declarations, the second of which is not one. Refused at the point the

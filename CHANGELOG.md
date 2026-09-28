@@ -26,6 +26,11 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Added
 
+- `instance.env` is written 0600, like the two files its declarations reach
+  (`serveradmin.xml` and `serverconfig.xml`). On a server it carries
+  `SERVER_ADMINS`, so a 022 umask left every Local player name the instance
+  admits readable to every account on the host. The mode is applied on every
+  server bring-up, so an instance created before this is restricted too.
 - `scripts/test_sb_release.sh` gates the release contract on every push, so a
   version that is bumped without notes is caught here rather than by the tag:
   `SB_VERSION` must be `MAJOR.MINOR.PATCH`, must have a dated section in this
@@ -64,6 +69,18 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- `sbconfig.py seed-admins` takes the declared Local admin names on stdin, one
+  per line, instead of as `--name` arguments. An argument is readable through
+  `/proc/<pid>/cmdline` by every account on the host for as long as the process
+  lives, so the seeding path published the player names a server admits. The
+  option is refused rather than ignored, so a caller still passing it fails
+  loudly instead of seeding nothing.
+- The per-instance process scan read every `/proc/<pid>/environ` through a
+  `tr | grep` pair, forking twice per process on the host. On a busy machine a
+  `sb up --timeout 3` whose server never bound took over 30s to fail, so
+  `scripts/test_sb_up.py` failed a bring-up that was honouring its timeout. The
+  environment is read in-process now, on a whole entry, so a value holding the
+  marker inside another one still cannot match.
 - A `sb up` (or `sb run both`) that times out waiting for the game port stops
   the server it started. That server was already detached and already holding
   its port block, so a harness retrying against a wedged instance left another

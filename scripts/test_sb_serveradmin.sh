@@ -47,6 +47,7 @@ EOF
 # The interpreter check travels with them: seeding shells out to sbconfig.py.
 source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^env_value()/,/^}/p' "$SB")
 $(sed -n '/^default_server_admins()/,/^}/p' "$SB")
+$(sed -n '/^restrict_instance_env()/,/^}/p' "$SB")
 $(sed -n '/^seed_sandbox_admins()/,/^}/p' "$SB")"
 
 seed_sandbox_admins "$INST"
@@ -63,6 +64,13 @@ expect_grep "default Player Local admin" \
 # The file that hands permission_level=0 to a player name is user-only, on
 # creation and after every rewrite, rather than whatever the umask said.
 expect_eq "serveradmin.xml is 0600" "$(stat -c '%a' "$admin")" "600"
+
+# instance.env carries the same names in SERVER_ADMINS, so it is restricted on
+# the same path: an instance.env left 0644 by a 022 umask publishes every Local
+# player name the server admits to every account on the host.
+chmod 0644 "$INST/instance.env"
+seed_sandbox_admins "$INST"
+expect_eq "instance.env is 0600 after a seed" "$(stat -c '%a' "$INST/instance.env")" "600"
 
 # An unrelated instance on the machine must not leak into this server's file.
 mkdir -p "$INSTANCES_DIR/client-unrelated"
@@ -132,7 +140,12 @@ checks = [
     ("cmd_wipe", "seed_sandbox_admins"),
     # `sb up` and `sb run both` both seed through start_server_detached.
     ("start_server_detached", "seed_sandbox_admins"),
+    # The declared names travel on stdin, never as arguments: argv is readable
+    # through /proc/<pid>/cmdline by every account on the host, which would
+    # publish the player names this server admits.
+    ("seed_sandbox_admins", "restrict_instance_env"),
 ]
+
 fail = 0
 
 
@@ -163,6 +176,12 @@ for fn, needle in checks:
     if not delegated:
         print(f"FAIL: {fn} does not call {needle}", file=sys.stderr)
         fail = 1
+
+# No `--name` in the seed helper: that spelling puts the player name in argv,
+# which every account on the host can read while the process lives.
+if "--name" in (body_of("seed_sandbox_admins") or ""):
+    print("FAIL: seed_sandbox_admins passes an admin name in argv", file=sys.stderr)
+    fail = 1
 sys.exit(fail)
 PY
 

@@ -75,10 +75,10 @@ request. No game, no Proton, no steamcmd.
 
 | Gate | Pins |
 |---|---|
-| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); a value XML cannot carry is refused, not written; commented template lines stay commented and a commented `</ServerSettings>` is not an insert anchor; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, in either the paired or the self-closing `<user>` form; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name |
+| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); a value XML cannot carry is refused, not written; commented template lines stay commented and a commented `</ServerSettings>` is not an insert anchor; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, in either the paired or the self-closing `<user>` form; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name; `seed-admins` reads its names from stdin and refuses the `--name` spelling |
 | `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key is a literal, and a value spanning lines is refused |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
-| `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite |
+| `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite; `instance.env`, which carries the same names, is restricted on the same path; no admin name is passed in argv |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout; `sb list` and `sb stop` see the running instance and leave its idle neighbour alone |
 | `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused; the declared python floor in `sb` and `MIN_PYTHON` in `sbconfig.py` are one number, a missing interpreter is named, and a caller-supplied `-screen-` argument is still recognised |
 | `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
@@ -123,7 +123,7 @@ Every instance `instances/<name>/` is fully independent:
 | `compatdata/` | Client only: own Proton prefix (registry, `%APPDATA%\7DaysToDie`, `LocalLow`). |
 | `userdata/` | Server only: own saves, generated worlds, logs, `serveradmin.xml` (always seeded with Local level-0 admins for every client instance name; PltfmId `Local_<playername>`). |
 | `logs/` | Host-side log dir (client: symlink from prefix; server: direct write). |
-| `instance.env` | The standardized contract (below). Server instances carry `SERVER_KIND=server`, their port block, and `SERVER_ADMINS`. |
+| `instance.env` | The standardized contract (below), written `0600` because a server's copy carries `SERVER_ADMINS`. Server instances carry `SERVER_KIND=server`, their port block, and `SERVER_ADMINS`. |
 | `instance.props` | Server only: the serverconfig properties declared for this instance (`sb render-config`). The config is rebuilt from these, never edited in place. |
 | `instance.env` (client) | Also declares the window: `SB_RES`, `SB_FULLSCREEN`. |
 
