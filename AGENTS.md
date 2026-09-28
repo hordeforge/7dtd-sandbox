@@ -205,6 +205,13 @@ a value carrying a newline (exit 2). The name is a regex in the upsert that
 rewrites an existing property and a line prefix in `instance.props`; the value
 is one line of that file.
 
+A bring-up that fails owns its own teardown: when the port wait times out, `sb
+up` and `sb run both` stop the server they started rather than leaving a
+detached process holding the instance's port block. `sb create` and `sb
+create-server` are the same contract for a directory: a create that fails after
+allocating the instance directory removes the partial tree, so a retry starts
+clean instead of being refused with "already exists".
+
 ## The contract (sibling harnesses)
 
 Standard env vars, resolvable two ways:

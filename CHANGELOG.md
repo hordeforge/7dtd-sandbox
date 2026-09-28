@@ -51,6 +51,24 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- A `sb up` (or `sb run both`) that times out waiting for the game port stops
+  the server it started. That server was already detached and already holding
+  its port block, so a harness retrying against a wedged instance left another
+  server, world and userdata tree behind per attempt.
+- A `sb create` or `sb create-server` that fails after allocating the instance
+  directory removes the partial tree. It used to survive the failure and refuse
+  every retry with "instance already exists" until someone removed it by hand.
+- `sb stop`, `sb destroy` and both failed bring-up paths share one
+  instance-scoped TERM-then-KILL teardown, so a server this run started is the
+  server this run stops.
+- `start_server_detached` truncates `logs/server.stdout.log` per start. It is
+  the sandbox's own capture and nothing ever rotated it, so an instance brought
+  up repeatedly grew it without bound. The game's own `server.log` is
+  untouched.
+- A failed `serveradmin.xml` atomic write no longer leaves its temp file behind
+  in the instance's `Saves/` tree, where nothing swept it.
+- `sb doctor` removes its reflink probe file whether the probe copy succeeded
+  or failed.
 - `sb up` and `sb run both` took their port-wait deadline from the wall clock,
   so an NTP step ended the wait early or extended it by the size of the step
   instead of running the requested `--timeout`. The deadline is elapsed time

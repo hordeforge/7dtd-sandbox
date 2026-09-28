@@ -202,7 +202,16 @@ def test_up_fails_inside_its_timeout_and_names_the_log(tmp: Path) -> None:
         )
         assert "did not open port" in proc.stderr, proc.stderr
         assert "logs/server.log" in proc.stderr, "the failure must name the log to read"
+        # A server that never bound is still running and still owns its port
+        # block. Leaving it there meant every retry piled up another one, so the
+        # failure path has to stop what it started. A moment of grace for the
+        # kernel to reap the killed process.
+        deadline = time.monotonic() + 5
         pids = server_pids(inst)
+        while pids and time.monotonic() < deadline:
+            time.sleep(0.2)
+            pids = server_pids(inst)
+        assert not pids, f"sb up failed but left the server running: {pids}"
     finally:
         stop(pids)
     print("PASS up_fails_inside_its_timeout_and_names_the_log")

@@ -301,6 +301,9 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
             print(f"WARN: could not restrict {path} to {mode:04o}: {ex}", file=sys.stderr)
         os.replace(tmp, path)
     except OSError as ex:
+        # A failed write leaves a partial temp file in the instance's Saves
+        # tree. Nothing ever sweeps it, so a long-lived lab accumulates one per
+        # failed seed, and a reader globbing serveradmin.xml* finds the debris.
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"cannot write {path}: {ex}") from ex
 

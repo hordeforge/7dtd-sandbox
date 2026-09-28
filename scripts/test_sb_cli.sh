@@ -317,6 +317,51 @@ grep -q 'name="GameWorld" value="Navezgane"' "$TMP/instances/srv-t/serverconfig.
   || { echo "FAIL: render-config did not set GameWorld" >&2; fail=1; }
 check "env server kind ok"      0 env SANDBOX_HOME="$TMP" "$SB" env srv-t
 
+# --- a create either completes or leaves nothing behind --------------------
+
+# A real base and server base, so both create paths run end to end.
+touch "$TMP/base/game/7DaysToDie.exe"
+mkdir -p "$TMP/base/server-game/Mods/0_TFP_Harmony" "$TMP/base/server-game/Mods/SampleMod"
+touch "$TMP/base/server-game/7DaysToDieServer.x86_64"
+printf '<ServerSettings>\n</ServerSettings>\n' > "$TMP/base/server-game/serverconfig.xml"
+
+check "create client ok"        0 env SANDBOX_HOME="$TMP" "$SB" create cli-ok
+[[ -f "$TMP/instances/cli-ok/game/7DaysToDie.exe" ]] \
+  || { echo "FAIL: create did not copy the base into the instance" >&2; fail=1; }
+[[ -d "$TMP/instances/cli-ok/game/Mods/SampleMod" ]] \
+  && { echo "FAIL: a sample mod survived into a fresh client instance" >&2; fail=1; }
+check "create server ok"        0 env SANDBOX_HOME="$TMP" "$SB" create-server srv-ok
+grep -q '^SERVER_PORT=' "$TMP/instances/srv-ok/instance.env" \
+  || { echo "FAIL: create-server recorded no port block" >&2; fail=1; }
+
+# The instance dir is allocated before the work that fills it. A failure
+# anywhere in that work used to leave a tree behind that refuses every retry
+# with "already exists" and has to be removed by hand; the create rolls it back
+# instead. Two deterministic ways to fail after the allocation: a config helper
+# that cannot run (server), and a base the copy cannot read (client).
+printf 'this is not python\n' > "$TMP/broken-sbconfig.py"
+out="$(env SANDBOX_HOME="$TMP" SB_CONFIG="$TMP/broken-sbconfig.py" \
+  "$SB" create-server halfmade-server 2>&1 || true)"
+grep -q "was not created" <<<"$out" \
+  || { echo "FAIL: a failed create-server did not report the rollback: $out" >&2; fail=1; }
+[[ -e "$TMP/instances/halfmade-server" ]] \
+  && { echo "FAIL: a failed create-server left an instance dir behind" >&2; fail=1; }
+
+# root reads an unreadable directory, so this case only means anything as a
+# normal user; CI runs as one, and a root run skips rather than asserts nothing.
+if [[ "$(id -u)" -ne 0 ]]; then
+  mkdir -p "$TMP/unreadable/game/blocked"
+  touch "$TMP/unreadable/game/7DaysToDie.exe" "$TMP/unreadable/game/blocked/data"
+  chmod 000 "$TMP/unreadable/game/blocked"
+  out="$(env SANDBOX_HOME="$TMP" SANDBOX_BASE_GAME="$TMP/unreadable/game" \
+    "$SB" create halfmade-client 2>&1 || true)"
+  chmod 755 "$TMP/unreadable/game/blocked"
+  grep -q "was not created" <<<"$out" \
+    || { echo "FAIL: a failed create did not report the rollback: $out" >&2; fail=1; }
+  [[ -e "$TMP/instances/halfmade-client" ]] \
+    && { echo "FAIL: a failed create left an instance dir behind" >&2; fail=1; }
+fi
+
 # --- fetch arg validation ----------------------------------------------------
 
 check "fetch bad flag dies"     2 "$SB" fetch-base --nonsense

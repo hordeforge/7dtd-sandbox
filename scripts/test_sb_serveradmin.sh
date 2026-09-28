@@ -135,16 +135,33 @@ checks = [
     ("start_server_detached", "seed_sandbox_admins"),
 ]
 fail = 0
-for fn, needle in checks:
+
+
+def body_of(fn):
     m = re.search(rf'^{fn}\(\) \{{', text, re.M)
     if not m:
+        return None
+    rest = text[m.end():]
+    n = re.search(r'\n[a-zA-Z_][a-zA-Z0-9_]*\(\) \{', rest)
+    return rest[: n.start()] if n else rest
+
+
+for fn, needle in checks:
+    body = body_of(fn)
+    if body is None:
         print(f"FAIL: {fn} not found", file=sys.stderr)
         fail = 1
         continue
-    rest = text[m.end():]
-    n = re.search(r'\n[a-zA-Z_][a-zA-Z0-9_]*\(\) \{', rest)
-    body = rest[: n.start()] if n else rest
-    if needle not in body:
+    if needle in body:
+        continue
+    # A create path may run its work in a `*_body` helper inside a subshell, so
+    # a failure rolls the half-built instance dir back. Follow one level of that
+    # delegation rather than reading it as a missing call.
+    delegated = any(
+        needle in (body_of(helper) or "")
+        for helper in re.findall(r'\b([a-z_][a-z0-9_]*_body)\b', body)
+    )
+    if not delegated:
         print(f"FAIL: {fn} does not call {needle}", file=sys.stderr)
         fail = 1
 sys.exit(fail)

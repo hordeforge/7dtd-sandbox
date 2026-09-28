@@ -443,14 +443,38 @@ cmd_create_server() {
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
   local inst="$INSTANCES_DIR/$name"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
-  local port admins extra
-  port="$(alloc_server_ports "$name")"
+  # Validated and assembled before the directory exists, so a refused name
+  # exits 2 with nothing written rather than through the rollback below.
+  local admins extra
   admins="$(default_server_admins "$name")"
   for extra in "$@"; do
     validate_admin_name "$extra"
     admins="${admins:+$admins,}$extra"
   done
   mkdir -p "$inst"
+  # Everything past this point works on a directory nothing else has claimed
+  # yet. A failure anywhere in it (a copy that ran out of space, a seeding
+  # error) would otherwise leave an instance dir that refuses every retry with
+  # "already exists" and has to be removed by hand. The subshell keeps `die`
+  # from ending the whole run, so the rollback is reachable.
+  if ! (
+    set -e
+    create_server_body "$inst" "$name" "$admins"
+  ); then
+    rm -rf "$inst"
+    die "server instance '$name' was not created; the partial tree at $inst is removed"
+  fi
+  local port
+  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
+  echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
+}
+
+# The body of cmd_create_server, run in a subshell so the caller can roll the
+# instance directory back when any step of it fails.
+create_server_body() {
+  local inst="$1" name="$2" admins="$3"
+  local port
+  port="$(alloc_server_ports "$name")"
   echo "copying server base into instance (reflink/COW)..."
   copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
   prune_instance_mods "$inst"
@@ -478,7 +502,6 @@ SERVER_KIND=server
 EOF
   : > "$inst/instance.props"
   seed_sandbox_admins "$inst"
-  echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
 }
 
 cmd_launch_server() {
@@ -666,6 +689,22 @@ cmd_create() {
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   PROTON="$(detect_proton)"
   mkdir -p "$inst"
+  # Rolled back on failure for the same reason as create_server: a half-built
+  # instance dir refuses every retry with "already exists".
+  if ! (
+    set -e
+    create_client_body "$inst" "$name" "$res" "$fullscreen"
+  ); then
+    rm -rf "$inst"
+    die "instance '$name' was not created; the partial tree at $inst is removed"
+  fi
+  echo "created instance '$name' at $inst"
+}
+
+# The body of cmd_create, run in a subshell so the caller can roll the instance
+# directory back when any step of it fails.
+create_client_body() {
+  local inst="$1" name="$2" res="$3" fullscreen="$4"
   echo "copying base game into instance (reflink/COW)..."
   copy_tree "$BASE_GAME" "$inst/game" "base game"
   prune_instance_mods "$inst"
@@ -699,19 +738,33 @@ EOF
   fi
   seed_offline_prefs "$inst"
   link_prefix_logs "$inst"
-  echo "created instance '$name' at $inst"
+}
+
+# TERM, then KILL whatever is still standing, for every process bound to this
+# instance. The one teardown every path shares: `stop`, `destroy`, and the
+# bring-up paths that must not abandon a server they started. Nothing else
+# matches by pattern, so one instance's teardown never touches another's.
+terminate_instance() {
+  local inst="$1"
+  local pids
+  mapfile -t pids < <(instance_procs "$inst")
+  (( ${#pids[@]} )) || return 0
+  echo "stopping instance (pids: ${pids[*]})"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  sleep 3
+  mapfile -t pids < <(instance_procs "$inst")
+  if (( ${#pids[@]} > 0 )); then
+    echo "still alive, sending KILL: ${pids[*]}"
+    kill -KILL "${pids[@]}" 2>/dev/null || true
+  fi
 }
 
 cmd_destroy() {
   local name="$1" inst
   inst="$(instance_dir "$name")"
-  local pids
-  mapfile -t pids < <(instance_procs "$inst")
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    echo "sb: instance '$name' is running (pids: ${pids[*]}); stopping it first"
-    kill -TERM "${pids[@]}" 2>/dev/null || true
-    sleep 2
-    kill -KILL "${pids[@]}" 2>/dev/null || true
+  if [[ -n "$(instance_procs "$inst")" ]]; then
+    echo "sb: instance '$name' is running; stopping it first"
+    terminate_instance "$inst"
   fi
   rm -rf "$inst"
   echo "destroyed instance '$name'"
@@ -917,14 +970,8 @@ cmd_stop() {
     echo "sb: instance '$name' is not running"
     return 0
   fi
-  echo "stopping instance '$name' (pids: ${pids[*]})"
-  kill -TERM "${pids[@]}" 2>/dev/null || true
-  sleep 3
-  mapfile -t pids < <(instance_procs "$inst")
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    echo "still alive, sending KILL: ${pids[*]}"
-    kill -KILL "${pids[@]}" 2>/dev/null || true
-  fi
+  echo "stopping instance '$name'"
+  terminate_instance "$inst"
   echo "stopped"
 }
 
@@ -1069,6 +1116,10 @@ start_server_detached() {
   local inst="$1" name="$2" port="$3" telnet_port="$4"
   local cfg
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  # Truncated per start: the game rotates its own server.log, but this capture
+  # is the sandbox's, and a suite that brings the same instance up hundreds of
+  # times would grow it without bound. One start's output per file.
+  : > "$inst/logs/server.stdout.log"
   cfg="$(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
   seed_sandbox_admins "$inst"
   # `setsid --fork` (not a backgrounded `setsid ... &`): setsid forks the
@@ -1145,6 +1196,12 @@ cmd_up() {
   [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
   start_server_detached "$inst" "$name" "$port" "$telnet_port"
   if ! wait_for_port 127.0.0.1 "$port" "$timeout"; then
+    # A server that never bound is still running and still holds its port
+    # block. Stopping it here is what keeps a failed bring-up from leaving one
+    # behind per attempt: a harness retrying against a wedged instance would
+    # otherwise pile up servers, each owning a world and a userdata tree.
+    echo "sb: bring-up failed, stopping the server it started" >&2
+    terminate_instance "$inst"
     die "server '$name' did not open port $port in ${timeout}s; check $inst/logs/server.log"
   fi
   echo "server '$name' up on port $port (telnet $telnet_port)"
@@ -1220,6 +1277,10 @@ cmd_run() {
       start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$(( srv_port + 1 ))"
       echo "waiting for server port $srv_port ..."
       if ! wait_for_port 127.0.0.1 "$srv_port" 90; then
+        # Same as `sb up`: a server that never bound is stopped, not left
+        # holding the port block behind a failed `run both`.
+        echo "sb: bring-up failed, stopping the server it started" >&2
+        terminate_instance "$srv_inst"
         die "server did not open port $srv_port in 90s; check $srv_inst/logs/server.log"
       fi
       echo "server up; launching client '$cli_name' with -connect=127.0.0.1:$srv_port"
