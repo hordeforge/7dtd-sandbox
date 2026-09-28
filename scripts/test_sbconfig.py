@@ -553,6 +553,13 @@ def main() -> int:
             except AssertionError as ex:
                 print(f"FAIL {test.__name__}: {ex}", file=sys.stderr)
                 failed += 1
+            except Exception as ex:
+                # A test that raises rather than asserts is still a failing
+                # test. Letting it escape would abandon every case after it,
+                # so the report says which one broke and the suite still
+                # reports the rest.
+                print(f"ERROR {test.__name__}: {type(ex).__name__}: {ex}", file=sys.stderr)
+                failed += 1
     if failed:
         print(f"test_sbconfig: FAILED ({failed})", file=sys.stderr)
         return 1

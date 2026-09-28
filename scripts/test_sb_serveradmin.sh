@@ -115,12 +115,10 @@ if [[ -n "$out" ]]; then
   fail=1
 fi
 
-# definition + 4 call sites (create-server / launch-server / wipe / detached start)
-n="$(grep -c 'seed_sandbox_admins' "$SB" || true)"
-if [[ "$n" -lt 5 ]]; then
-  echo "FAIL: expected seed_sandbox_admins definition + 4 call sites, found $n" >&2
-  fail=1
-fi
+# Which functions seed. The four call sites (create-server / launch-server /
+# wipe / detached start) are checked by name below; counting occurrences of
+# the identifier across the file would also count the definition and every
+# comment, so it passed whether or not a call site was actually removed.
 
 python3 - "$SB" <<'PY' || fail=1
 import re, sys

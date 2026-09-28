@@ -16,12 +16,14 @@ expect_eq() { # expect_eq <desc> <got> <want>
 }
 check() { # check <desc> <expected-rc> <cmd...>
   local desc="$1" want="$2"; shift 2
-  local rc=0
+  local rc=0 out=""
   # Subshell: a sourced sb helper calls `exit` on refusal, which would take
-  # this script down instead of reporting the exit code under test.
-  ( "$@" ) >/dev/null 2>&1 || rc=$?
+  # this script down instead of reporting the exit code under test. The output
+  # is captured rather than dropped, so a failure says what the command said.
+  out="$( ("$@") 2>&1 )" || rc=$?
   if [[ "$rc" != "$want" ]]; then
     echo "FAIL: $desc (rc=$rc want=$want)" >&2
+    [[ -n "$out" ]] && printf '  said: %s\n' "$out" >&2
     fail=1
   fi
 }

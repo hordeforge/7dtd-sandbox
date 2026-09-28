@@ -111,11 +111,16 @@ expect_eq "undeclared property returns to the base template" \
 # expression: `.` in one key matched a neighbour's name and deleted a
 # declaration it had nothing to do with, and a key holding an unmatched `[`
 # made grep fail, which left instance.props holding only the key just
-# declared.
-sb render-config srv-demo 'Game.World=dot' >/dev/null
-sb render-config srv-demo 'GameWorld=dotted' >/dev/null
-expect_eq "key with a dot is applied"          "$(active_value "$cfg" Game.World)" "dot"
-expect_eq "key with a dot spares its neighbour" "$(active_value "$cfg" GameWorld)" "dotted"
+# declared. Two defenses now: a key outside [A-Za-z_][A-Za-z0-9_]* never
+# reaches the upsert (asserted below), and the upsert matches a literal
+# `KEY=` prefix, which is what spares the neighbour here.
+sb render-config srv-demo Game_World=underscore >/dev/null
+sb render-config srv-demo Game_World2=applied >/dev/null
+expect_eq "underscore key is applied"   "$(active_value "$cfg" Game_World2)" "applied"
+expect_eq "upsert spares its neighbour" "$(active_value "$cfg" Game_World)" "underscore"
+grep -v '^Game_World' "$INST/instance.props" > "$INST/props.new"
+mv "$INST/props.new" "$INST/instance.props"
+sb render-config srv-demo GameWorld=dotted >/dev/null
 
 # instance.props is one KEY=VALUE per line, so a value carrying a newline is
 # two declarations, the second of which is not one. Refused at the point the
@@ -135,10 +140,11 @@ done
 
 # --- a glob-shaped property name is refused, and costs nothing --------------
 
-# `.*` looks like a legal property name to a caller. Matched as a regex it used
-# to drop every other declaration, so one render-config call erased the
-# instance's whole state; the name charset now refuses it outright, and the
-# refusal happens before the declaration file is touched.
+# `.*` looks like a legal property name to a caller. A key is the line prefix
+# in instance.props, and matching it (and dropping it) used to drop every other
+# declaration with it, so one render-config call erased the instance's whole
+# declared state. The name charset now refuses it outright, before the
+# declaration file is touched.
 cp "$INST/instance.props" "$INST/props.before-glob"
 rc=0
 sb render-config srv-demo '.*=oops' >/dev/null 2>&1 || rc=$?
@@ -146,6 +152,10 @@ expect_eq "a glob-shaped key is refused" "$rc" "2"
 expect_eq "a refused key changes no declaration" \
   "$(grep -c '^[A-Za-z]' "$INST/instance.props")" \
   "$(grep -c '^[A-Za-z]' "$INST/props.before-glob")"
+expect_eq "a refused key is not declared" \
+  "$(grep -c '^\.\*=' "$INST/instance.props")" "0"
+expect_eq "the config is untouched by the refusal" \
+  "$(active_value "$cfg" GameWorld)" "dotted"
 
 # --- the contract is exported, not merely assigned --------------------------
 

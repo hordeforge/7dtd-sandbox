@@ -276,6 +276,12 @@ def main() -> int:
         except AssertionError as ex:
             print(f"FAIL {test.__name__}: {ex}", file=sys.stderr)
             failed += 1
+        except Exception as ex:
+            # A test that raises rather than asserts is still a failing test.
+            # Letting it escape abandons every case after it, and the reader
+            # cannot tell which one never ran.
+            print(f"ERROR {test.__name__}: {type(ex).__name__}: {ex}", file=sys.stderr)
+            failed += 1
     if failed:
         print(f"test_dockerfile: FAILED ({failed})", file=sys.stderr)
         return 1
