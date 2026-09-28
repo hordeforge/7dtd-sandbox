@@ -8,6 +8,11 @@
 # behind. Part of `make test`; needs no game, no Proton, no steamcmd.
 set -euo pipefail
 
+# Pinned so the file-mode assertions below mean the same thing on a runner whose
+# shell has a stricter umask, where an unguarded file would already come out
+# 0600 and the gate would pass without the restriction it exists to check.
+umask 022
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SB="$ROOT/scripts/sb"
 SBCONFIG="$ROOT/scripts/sbconfig.py"
@@ -263,6 +268,35 @@ rc=0
 sb render-config srv-demo GameWorld=Navezgane >/dev/null 2>&1 || rc=$?
 expect_eq "non-numeric SERVER_PORT refused" "$rc" "1"
 cp "$INST/env.good" "$INST/instance.env"
+
+# A refused port pair must leave the declarations alone. Recording them first
+# and validating after left instance.props claiming a world the call had exited
+# without rendering, so the next launch applied a declaration this call reported
+# as refused.
+props_before="$(cat "$INST/instance.props")"
+sed -i 's/^SERVER_PORT=27105/SERVER_PORT=not-a-port/' "$INST/instance.env"
+rc=0
+sb render-config srv-demo GameWorld=Wasteland >/dev/null 2>&1 || rc=$?
+cp "$INST/env.good" "$INST/instance.env"
+expect_eq "a refused port pair is refused" "$rc" "1"
+expect_eq "a refused port pair records nothing" "$(cat "$INST/instance.props")" "$props_before"
+if grep -q '^GameWorld=Wasteland$' "$INST/instance.props"; then
+  echo "FAIL: a refused render-config still recorded its declaration" >&2
+  fail=1
+fi
+
+# instance.props carries the declared values, and a rendered serverconfig can
+# carry TelnetPassword, so the declaration file is user-only like the config
+# built from it. A temp created by the shell redirect took the umask, and the
+# rename published it that way.
+chmod 0644 "$INST/instance.props"
+sb render-config srv-demo MaxPlayers=8 >/dev/null
+expect_eq "instance.props is 0600 after a declaration" \
+  "$(stat -c '%a' "$INST/instance.props")" "600"
+chmod 0644 "$INST/instance.props"
+sb render-config srv-demo MaxPlayers=8 >/dev/null
+expect_eq "instance.props stays 0600 when re-declared" \
+  "$(stat -c '%a' "$INST/instance.props")" "600"
 
 # --- ports are derived from the name, not from creation order ---------------
 

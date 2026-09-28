@@ -123,6 +123,36 @@ Nothing is deprecated ahead of removal in this repository today.
 - `make check` fails the tree: `scripts/test_sbconfig_fuzz.py` shipped
   executable with no shebang, so ruff's `EXE002` made every `make check` red on
   a clean checkout.
+- `instance.props` was published at the caller's umask. A declaration reaches
+  `serverconfig.xml`, which is kept 0600 precisely because a rendered config
+  can carry `TelnetPassword`, and that password is declared in
+  `instance.props`; the temp the rewrite builds is now restricted before the
+  rename, like `sbconfig.py`'s own atomic write.
+- `sb render-config` recorded its declarations before checking the instance's
+  port pair. A hand-edited `instance.env` that failed the check exited with
+  nothing rendered and `instance.props` already claiming the world, which the
+  next launch then applied.
+- `sbconfig.py recorded_ports` raised an unhandled `OSError` when the
+  instances directory itself could not be listed, so a sandbox home another
+  account owns turned an unrelated `sb create-server` into a traceback over a
+  path the caller had never heard of. It is reported and skipped, as the
+  per-file case already was.
+- `sbconfig.py seed-admins` ended in a traceback over `sys.stdin` when the
+  declared names on stdin were not valid UTF-8. The declaration and the reason
+  are now named, and nothing is seeded.
+- `seed_admins` created a new `serveradmin.xml` with a direct write and
+  restricted it afterwards, so the file was readable by every local account for
+  the length of that window and a write failing part-way left a half-written
+  file behind. Creation goes through the same temp-and-rename the rest of the
+  module uses.
+- A missing `logs` symlink in the Proton prefix was silent: the client then
+  wrote its log inside the prefix and the host path `instance.env` declares as
+  `LOGFILE` never appeared, with nothing saying why `sb logs` was empty.
+- `scripts/test_sb_up.py` picked a port by binding to 0 and closing, which
+  proves nothing once the fixture server is a separate process: the kernel
+  hands out ports other sockets are listening on, so the never-binds case ran
+  against whatever was squatting on the port and failed or passed at random. A
+  port is now handed out only once nothing answers on it.
 - `make check` was red on a clean checkout with the ruff CI pins: 45 findings
   across `sbconfig.py` and the two config gates (long lines, percent-format,
   magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a

@@ -256,19 +256,26 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
     rewrites: an instance.env is read for its digits and never written back,
     and a byte that will not decode cannot turn into one.
 
-    A file that cannot be read is reported and skipped, not raised. This runs
-    while creating an instance, scanning every other one on the machine, and
-    one of them being root-owned (a base fetched through the container, a
-    tree left by a different uid) used to abort this call with a traceback
-    over somebody else's file, so an unrelated `sb create` failed with a stack
-    trace naming a path the caller had never heard of. Skipping can only cost
-    the probe one block: a collision surfaces as the server failing to bind,
-    which names the port that clashed.
+    A directory or file that cannot be read is reported and skipped, not
+    raised. This runs while creating an instance, scanning every other one on
+    the machine, and one of them being root-owned (a base fetched through the
+    container, a tree left by a different uid) used to abort this call with a
+    traceback over somebody else's file, so an unrelated `sb create` failed
+    with a stack trace naming a path the caller had never heard of. Skipping
+    can only cost the probe one block: a collision surfaces as the server
+    failing to bind, which names the port that clashed. The stat of the
+    instances dir itself is inside that promise too: a sandbox home another
+    account owns used to escape it as an unhandled OSError.
     """
     taken: set[int] = set()
-    if not instances.is_dir():
+    try:
+        if not instances.is_dir():
+            return taken
+        entries = sorted(instances.iterdir())
+    except OSError as ex:
+        print(f"WARN: cannot scan {instances}: {ex}", file=sys.stderr)
         return taken
-    for entry in sorted(instances.iterdir()):
+    for entry in entries:
         if not entry.is_dir() or entry.name == exclude:
             continue
         env = entry / "instance.env"
@@ -444,13 +451,12 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     if not out.is_file():
         # _atomic_write, not write_text plus a chmod: the created file already
         # holds the level-0 admin list, and create-then-restrict publishes it
-        # at the umask for as long as the chmod takes. The temp carries 0600
-        # from the start and arrives by rename, so no name is ever readable
-        # that the finished file is not. It is also the temp+replace every
-        # other write here uses, so a name the encoder refuses cannot leave a
-        # truncated serveradmin.xml behind: a plain write_text that raises
-        # mid-way leaves the empty file a reader sees as an admin list granting
-        # nobody.
+        # at the umask for as long as the chmod takes, and a write_text that
+        # fails part-way leaves a half-written serveradmin.xml behind. The temp
+        # carries 0600 from the start and arrives by rename, so no name is ever
+        # readable that the finished file is not, and a name the encoder
+        # refuses cannot leave a truncated file a reader sees as an admin list
+        # granting nobody.
         _atomic_write(out, ADMIN_TEMPLATE.format(users=users_block))
         return True
 
@@ -463,6 +469,11 @@ def seed_admins(out: Path, names: list[str]) -> bool:
             f"{out} is not valid UTF-8 ({ex}); refusing to rewrite it, because "
             "the rewrite would replace the bad bytes and lose the names in them"
         ) from ex
+    except OSError as ex:
+        # Named like the template read in render: the caller is a launch that
+        # has to report why the admin file could not be seeded, and a bare
+        # errno string names neither the file nor the operation.
+        raise RuntimeError(f"cannot read {out}: {ex}") from ex
     text = text.lstrip("\ufeff")
     if USERS_CLOSER not in text or not _wellformed(text):
         # Malformed or unexpected shape: a rewrite from template is the only
@@ -571,13 +582,16 @@ def declared_admin_names(text: str) -> list[str]:
 
 
 def cmd_seed_admins(args: argparse.Namespace) -> int:
+    # Decoded strictly, like every file this module rewrites. A caller whose
+    # SERVER_ADMINS came from a latin-1 source fed bytes that will not decode,
+    # and letting the decode raise out of here reported it as a traceback over
+    # sys.stdin with no name to act on, instead of the declaration and the
+    # reason the admin file was not seeded. Admitting the first N names that
+    # happened to be ASCII would seed an admin list that is quietly missing the
+    # rest, so none of it is written.
     try:
         declared = declared_admin_names(sys.stdin.read())
     except UnicodeDecodeError as ex:
-        # The caller piped UTF-8 names and this process is not decoding them
-        # that way. Admitting the first N names that happened to be ASCII would
-        # seed an admin list that is quietly missing the rest, so none of it is
-        # written.
         print(
             f"ERROR: admin names on stdin are not valid UTF-8 ({ex}); "
             "pipe UTF-8, one name per line",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unicodedata
@@ -537,6 +538,54 @@ def test_seed_refuses_a_non_utf8_admin_file(tmp: Path) -> None:
     print("PASS seed_refuses_a_non_utf8_admin_file")
 
 
+def test_seed_refuses_non_utf8_declared_names(tmp: Path) -> None:
+    """A declaration that will not decode is named, not raised as a traceback.
+
+    The names arrive on stdin, so a caller whose SERVER_ADMINS came from a
+    latin-1 source fed bytes that cannot be decoded. Letting the decode escape
+    ended the process with a traceback over sys.stdin, naming neither the
+    declaration nor the admin file it was refusing to seed.
+    """
+    ud = tmp / "userdata"
+    saved = sys.stdin
+    sys.stdin = io.TextIOWrapper(io.BytesIO(b"client-Jos\xe9\n"), encoding="utf-8")
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = sbconfig.main(["seed-admins", str(ud)])
+    finally:
+        sys.stdin.close()
+        sys.stdin = saved
+    assert rc == 1, f"an undecodable declaration must fail, got {rc}"
+    assert "not valid UTF-8" in err.getvalue(), err.getvalue()
+    assert not (ud / "Saves" / "serveradmin.xml").exists(), "a refused seed wrote a file"
+    print("PASS seed_refuses_non_utf8_declared_names")
+
+
+def test_recorded_ports_reports_an_unreadable_instances_dir(tmp: Path) -> None:
+    """Another account's instances dir is reported, not raised over.
+
+    recorded_ports runs inside `sb create-server` while scanning every other
+    instance on the machine. A sandbox home this account cannot read used to
+    escape the skip-and-report promise as an unhandled OSError, so an unrelated
+    create died with a traceback naming a path the caller had never heard of.
+    Skipping costs the probe at most one block, and a collision surfaces as the
+    server failing to bind, which names the port that clashed.
+    """
+    instances = tmp / "instances"
+    instances.mkdir()
+    if os.geteuid() == 0:
+        print("SKIP recorded_ports_reports_an_unreadable_instances_dir (root reads anything)")
+        return
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        instances.chmod(0o000)
+        try:
+            assert sbconfig.recorded_ports(instances, exclude="mine") == set()
+        finally:
+            instances.chmod(0o755)
+    assert str(instances) in err.getvalue(), err.getvalue()
+    print("PASS recorded_ports_reports_an_unreadable_instances_dir")
+
+
 def test_get_refuses_a_non_utf8_config(tmp: Path) -> None:
     """`get` is how a caller reads back what the game will read."""
     cfg = tmp / "latin1.xml"
@@ -728,6 +777,8 @@ TESTS = (
     test_seed_rewrites_a_differently_spelled_admin,
     test_seed_leaves_a_same_named_non_local_admin_alone,
     test_seed_refuses_a_non_utf8_admin_file,
+    test_seed_refuses_non_utf8_declared_names,
+    test_recorded_ports_reports_an_unreadable_instances_dir,
     test_get_refuses_a_non_utf8_config,
     test_port_block_hashes_an_undecodable_name,
     test_refuses_an_interpreter_below_the_declared_floor,

@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,8 @@ UP_CALL_TIMEOUT_SEC = 60
 # spare for a slow runner. A bring-up that waits on the port probe instead of
 # the timeout is the bug this gate exists for.
 NEVER_BINDS_FAILS_BY_SEC = 30
+# Attempts to find an ephemeral port that is genuinely unoccupied, see free_port.
+FREE_PORT_ATTEMPTS = 20
 
 LISTENER = '''#!/usr/bin/env python3
 """Stand-in for 7DaysToDieServer.x86_64: bind the port, then idle."""
@@ -168,12 +171,35 @@ def stop(pids: list[int]) -> None:
             os.kill(pid, signal.SIGKILL)
 
 
-def free_port() -> int:
-    import socket
-
+def _accepts(port: int) -> bool:
+    """True when something is listening on 127.0.0.1:port right now."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def free_port() -> int:
+    """An ephemeral port that nothing is listening on.
+
+    Binding to 0 only proves the port was free at that instant. The fixture
+    server binds it later, from another process, and the kernel will hand out a
+    port another socket is already listening on: a listener left behind by an
+    earlier case (they idle for FAKE_SERVER_LIFETIME_SEC) or by an earlier run
+    of this gate. `sb up` then found the port open, reported a bring-up that
+    had not happened, and the never-binds case passed or failed on whatever
+    happened to be squatting on the port. So a port is only handed out once
+    nothing answers on it.
+    """
+    for _ in range(FREE_PORT_ATTEMPTS):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if not _accepts(port):
+            return port
+    raise RuntimeError(
+        f"no unoccupied ephemeral port in {FREE_PORT_ATTEMPTS} attempts; "
+        "this host has something listening on everything the kernel offers"
+    )
 
 
 def test_up_returns_and_orphans_the_server(tmp: Path) -> None:

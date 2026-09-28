@@ -403,7 +403,13 @@ link_prefix_logs() {
   if [[ -d "$inst/compatdata/pfx" ]]; then
     mkdir -p "$(dirname "$pfxlog")"
     rm -rf "$pfxlog"
-    ln -s "$inst/logs" "$pfxlog"
+    if ! ln -s "$inst/logs" "$pfxlog"; then
+      # Not fatal, and not silent either. Without the link the game writes its
+      # log inside the prefix, so the host path instance.env declares as
+      # LOGFILE is never created and every `sb logs` and every harness reading
+      # it finds nothing, with the client otherwise running fine.
+      warn "could not link $pfxlog to $inst/logs; the client log will stay inside the prefix and \$LOGFILE will not exist"
+    fi
   fi
 }
 
@@ -908,6 +914,15 @@ record_server_props() {
     rm -f "$tmp"
     die "could not write $tmp"
   fi
+  # Restricted before the rename, like sbconfig.py's _atomic_write: the
+  # declarations reach serverconfig.xml, which is kept 0600 because a rendered
+  # config can carry TelnetPassword, and that password is declared here. A temp
+  # created by the shell redirect carries the umask (0644 under the usual 022),
+  # so a `sb render-config <n> TelnetPassword=...` published the one file on the
+  # instance that could not be read back by the caller it was protecting.
+  if ! chmod 0600 "$tmp" 2>/dev/null; then
+    warn "could not restrict $tmp to 0600 (check the filesystem's mode support)"
+  fi
   if ! mv "$tmp" "$props"; then
     rm -f "$tmp"
     die "could not install $props"
@@ -1063,6 +1078,18 @@ EOF
   link_prefix_logs "$inst"
 }
 
+# Seconds a TERMed instance is given to exit before it is KILLed. Long enough
+# for the dedicated to flush its world and close its userdata, short enough
+# that a caller tearing down a wedged instance is not held up by it.
+TERM_GRACE_SEC=3
+
+# How long a bring-up waits for the game port to accept, when the caller named
+# no --timeout. `sb up` is the harness form, so its default is the generous
+# one; `sb run both` launches a client behind the same wait, so it uses the
+# shorter one and says so on failure.
+UP_PORT_WAIT_SEC=180
+RUN_BOTH_PORT_WAIT_SEC=90
+
 # TERM, then KILL whatever is still standing, for every process bound to this
 # instance. The one teardown every path shares: `stop`, `destroy`, and the
 # bring-up paths that must not abandon a server they started. Nothing else
@@ -1074,7 +1101,7 @@ terminate_instance() {
   (( ${#pids[@]} )) || return 0
   echo "stopping instance (pids: ${pids[*]})"
   kill -TERM "${pids[@]}" 2>/dev/null || true
-  sleep 3
+  sleep "$TERM_GRACE_SEC"
   mapfile -t pids < <(instance_procs "$inst")
   if (( ${#pids[@]} > 0 )); then
     echo "still alive, sending KILL: ${pids[*]}"
@@ -1524,7 +1551,7 @@ wait_for_port() {
 # `sb stop <name>` (same instance-scoped process match as every other path).
 cmd_up() {
   local name="$1"; shift || true
-  local timeout=180
+  local timeout="$UP_PORT_WAIT_SEC"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout) shift; [[ $# -gt 0 ]] || usage_err "--timeout needs a value"; timeout="$1" ;;
@@ -1580,8 +1607,13 @@ cmd_render_config() {
   for kv in "$@"; do
     validate_prop "$kv"
   done
-  record_server_props "$inst" "$@"
+  # The port pair is checked before anything is recorded, not after. Rendering
+  # needs it, and a hand-edited instance.env that fails the check left the
+  # declarations already written to instance.props with no rendered config
+  # behind them: the file claimed a world the next launch would then apply,
+  # while this call had exited with nothing rendered.
   instance_server_ports "$inst"
+  record_server_props "$inst" "$@"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
   apply_server_config "$inst" "$name" "$port" "$telnet_port"
   echo "config -> $APPLIED_CONFIG"
@@ -1616,12 +1648,12 @@ cmd_run() {
       echo "starting server '$srv_name' (port $srv_port) in background..."
       start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$srv_telnet_port"
       echo "waiting for server port $srv_port ..."
-      if ! wait_for_port 127.0.0.1 "$srv_port" 90; then
+      if ! wait_for_port 127.0.0.1 "$srv_port" "$RUN_BOTH_PORT_WAIT_SEC"; then
         # Same as `sb up`: a server that never bound is stopped, not left
         # holding the port block behind a failed `run both`.
         echo "sb: bring-up failed, stopping the server it started" >&2
         terminate_instance "$srv_inst"
-        die "server did not open port $srv_port in 90s; check $srv_inst/logs/server.log"
+        die "server did not open port $srv_port in ${RUN_BOTH_PORT_WAIT_SEC}s; check $srv_inst/logs/server.log"
       fi
       echo "server up; launching client '$cli_name' with -connect=127.0.0.1:$srv_port"
       # Bash cannot export a name starting with a digit; the connect mod
