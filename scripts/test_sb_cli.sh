@@ -380,6 +380,49 @@ if [[ "$(id -u)" -ne 0 ]]; then
     && { echo "FAIL: a failed create left an instance dir behind" >&2; fail=1; }
 fi
 
+# --- teardown and auto-create converge on a second run ----------------------
+
+# `sb destroy` is re-run: a harness whose last pass died, or a caller that
+# tears down unconditionally, destroys what is already gone. That is done, not
+# failed. The refusal (exit 2, "instance not found") also stopped `sb destroy
+# a b` at the first name that was already gone, leaving the rest standing.
+check "create server for teardown"  0 env SANDBOX_HOME="$TMP" "$SB" create-server srv-tear
+check "destroy ok"                   0 env SANDBOX_HOME="$TMP" "$SB" destroy srv-tear
+[[ -e "$TMP/instances/srv-tear" ]] \
+  && { echo "FAIL: destroy left the instance dir behind" >&2; fail=1; }
+check "destroy rerun ok"             0 env SANDBOX_HOME="$TMP" "$SB" destroy srv-tear
+
+# One missing name must not stop the teardown of the ones after it.
+check "create server for teardown 2" 0 env SANDBOX_HOME="$TMP" "$SB" create-server srv-tear2
+check "destroy skips a gone name"     0 env SANDBOX_HOME="$TMP" "$SB" destroy gone-name srv-tear2
+[[ -e "$TMP/instances/srv-tear2" ]] \
+  && { echo "FAIL: a missing name stopped destroy before the instance after it" >&2; fail=1; }
+
+# The auto-create path (`sb up` / `sb run` on a name with no instance) has to
+# converge on a rerun after a create that was killed part-way: the create
+# allocates the directory before the work that fills it, and its rollback only
+# runs when the create failed on its own terms. A directory with no
+# instance.env and nothing a create writes is that debris, and it is removed so
+# the retry builds the instance. A directory holding anything else is somebody
+# else's, and is refused by name rather than deleted.
+mkdir -p "$TMP/instances/srv-debris/game"
+out="$(env SANDBOX_HOME="$TMP" "$SB" up srv-debris --timeout 3 2>&1 || true)"
+grep -q "did not finish" <<<"$out" \
+  || { echo "FAIL: sb up did not name the unfinished create: $out" >&2; fail=1; }
+# ... and then built it: the bring-up itself fails here, because the fixture
+# 'server' is an empty file that binds nothing, which is a different failure
+# than the one above.
+[[ -f "$TMP/instances/srv-debris/instance.env" ]] \
+  || { echo "FAIL: sb up did not rebuild the unfinished instance: $out" >&2; fail=1; }
+
+mkdir -p "$TMP/instances/foreign"
+: > "$TMP/instances/foreign/notes.txt"
+out="$(env SANDBOX_HOME="$TMP" "$SB" up foreign --timeout 3 2>&1 || true)"
+grep -q "notes.txt" <<<"$out" \
+  || { echo "FAIL: sb up did not name the entry it refused: $out" >&2; fail=1; }
+[[ -e "$TMP/instances/foreign/notes.txt" ]] \
+  || { echo "FAIL: sb up removed a directory no create wrote" >&2; fail=1; }
+
 # --- fetch arg validation ----------------------------------------------------
 
 check "fetch bad flag dies"     2 "$SB" fetch-base --nonsense

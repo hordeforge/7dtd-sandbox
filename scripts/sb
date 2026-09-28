@@ -78,7 +78,8 @@ Underlying commands (full control):
   launch <name> [-- args...]    run client under Proton, no Steam
   launch-server <name>          run dedicated server, blocking
   wipe <name> [name...] reset game/Mods/saves to pristine
-  destroy <name> [name...]      remove instance entirely
+  destroy <name> [name...]      remove instance entirely (already gone: exit 0,
+                       so a re-run teardown converges rather than failing)
   stop <name> [name...]         TERM/KILL only this instance's processes
   list                  list instances with running state
   status <name>         show one instance's state and paths
@@ -222,6 +223,41 @@ instance_dir() {
   local inst="$INSTANCES_DIR/$1"
   [[ -d "$inst" ]] || usage_err "instance '$1' not found (create it with 'sb create $1' or 'sb create-server $1')"
   echo "$inst"
+}
+
+# Everything a create writes into an instance directory. A directory holding
+# no instance.env and nothing outside this set is not an instance: it is a
+# create that was killed between the mkdir and the contract, which the
+# create's rollback cannot reach because rollback only runs when the create
+# failed on its own terms.
+CREATE_ARTIFACTS='game compatdata userdata logs instance.props'
+
+# The instance exists, or create it. This is the auto-create path a harness
+# lands on when it re-runs `sb up` or `sb run` against an instance it never
+# finished building.
+#
+# `[[ -d ]]` alone read a half-finished create as an instance: the bring-up
+# then died with "missing instance.env (recreate the instance)" for a
+# directory no create ever completed, and every retry died the same way until
+# somebody removed the tree by hand. A directory with no contract is removed
+# and built again, and only when it holds nothing but what a create writes, so
+# a directory somebody put under instances/ by hand is refused by name rather
+# than deleted. An existing instance is left exactly as it is.
+ensure_instance() { # ensure_instance <name> <create-command> <name>
+  local name="$1"; shift
+  local inst="$INSTANCES_DIR/$name" entry
+  if [[ -d "$inst" && ! -f "$inst/instance.env" ]]; then
+    for entry in "$inst"/* "$inst"/.[!.]*; do
+      [[ -e "$entry" ]] || continue
+      case " $CREATE_ARTIFACTS " in
+        *" ${entry##*/} "*) ;;
+        *) die "$inst holds '${entry##*/}', which no create writes and has no instance.env; refusing to remove it (move it aside, then re-run)" ;;
+      esac
+    done
+    echo "sb: $inst is an instance a previous create did not finish; removing it" >&2
+    rm -rf "$inst" || die "could not remove the incomplete instance at $inst"
+  fi
+  [[ -d "$inst" ]] || "$@"
 }
 
 # Replace $dst with a fresh copy of $src. The copy is built in a staging
@@ -1008,7 +1044,17 @@ terminate_instance() {
 
 cmd_destroy() {
   local name="$1" inst
-  inst="$(instance_dir "$name")"
+  validate_name "$name"
+  inst="$INSTANCES_DIR/$name"
+  # Teardown is re-run: a harness whose previous pass died, or whose caller
+  # invokes the teardown unconditionally, destroys an instance that is already
+  # gone. That is done, not failed, and `instance_dir`'s exit 2 made it a
+  # failed one, which also stopped `sb destroy a b` at the first name that was
+  # already gone and left the rest of the list standing.
+  if [[ ! -d "$inst" ]]; then
+    echo "sb: instance '$name' is not there"
+    return 0
+  fi
   if [[ -n "$(instance_procs "$inst")" ]]; then
     echo "sb: instance '$name' is running; stopping it first"
     terminate_instance "$inst"
@@ -1457,7 +1503,7 @@ cmd_up() {
   done
   [[ "$timeout" =~ ^[0-9]+$ ]] || usage_err "--timeout must be a whole number of seconds"
   validate_name "$name"
-  [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create_server "$name" >/dev/null
+  ensure_instance "$name" cmd_create_server "$name" >/dev/null
   local inst="$INSTANCES_DIR/$name"
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
   [[ "$(env_value "$inst" SERVER_KIND)" == server ]] || die "'$name' is a client instance; use 'sb launch'"
@@ -1516,11 +1562,11 @@ cmd_run() {
   validate_name "$name"
   case "$mode" in
     client)
-      [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create "$name" >/dev/null
+      ensure_instance "$name" cmd_create "$name" >/dev/null
       exec cmd_launch "$name" "$@"
       ;;
     server)
-      [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create_server "$name" >/dev/null
+      ensure_instance "$name" cmd_create_server "$name" >/dev/null
       exec cmd_launch_server "$name" "$@"
       ;;
     both)
@@ -1529,11 +1575,9 @@ cmd_run() {
       # mod (reads 7DTD_CONNECT at menu, issues the console connect). Without
       # the sibling repo the client still launches and sits at the menu.
       local srv_name="srv-$name" cli_name="client-$name"
-      if [[ ! -d "$INSTANCES_DIR/$cli_name" ]]; then
-        cmd_create "$cli_name" >/dev/null
-      fi
+      ensure_instance "$cli_name" cmd_create "$cli_name" >/dev/null
       stage_fastconnect "$INSTANCES_DIR/$cli_name"
-      [[ -d "$INSTANCES_DIR/$srv_name" ]] || cmd_create_server "$srv_name" >/dev/null
+      ensure_instance "$srv_name" cmd_create_server "$srv_name" >/dev/null
 
       local srv_inst="$INSTANCES_DIR/$srv_name"
       instance_server_ports "$srv_inst"

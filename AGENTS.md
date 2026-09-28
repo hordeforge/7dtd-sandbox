@@ -80,8 +80,8 @@ request. No game, no Proton, no steamcmd.
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite; `instance.env`, which carries the same names, is restricted on the same path; no admin name is passed in argv |
 | `scripts/test_sb_copy.sh` | A copy that fails part-way costs the caller nothing: a failed `sb wipe` and a failed re-stage leave the instance tree and the modlet they were replacing intact, leave no staging or replaced-tree debris, and report `cp`'s own reason. Every replacing copy is staged and published by rename, because deleting the old tree first lost it whenever the rebuild failed |
-| `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout; `sb list` and `sb stop` see the running instance and leave its idle neighbour alone |
-| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused; the declared python floor in `sb` and `MIN_PYTHON` in `sbconfig.py` are one number, a missing interpreter is named, and a caller-supplied `-screen-` argument is still recognised |
+| `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a re-run against the directory a killed create left behind rebuilds the instance and still refuses a live one; a server that never binds fails inside its timeout; `sb list` and `sb stop` see the running instance and leave its idle neighbour alone |
+| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused; the declared python floor in `sb` and `MIN_PYTHON` in `sbconfig.py` are one number, a missing interpreter is named, and a caller-supplied `-screen-` argument is still recognised; a re-run teardown converges (`sb destroy` of an instance that is already gone exits 0 and does not stop at that name), and the auto-create path removes an unfinished instance and refuses a directory no create wrote |
 | `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
 | `scripts/test_sbconfig_fuzz.py` | The two untrusted-input parsers (`set_property` / `active_value` over a serverconfig template, `seed_admins` over a `serveradmin.xml` left by an earlier run) hold their invariants on mutated, structure-aware documents: write/read round trip, well-formed output, 0600 after a rewrite, declared admins at level 0, idempotence, and a per-call time budget. Seeded and deterministic (`--seed`, `--iters`); a finding prints a shrunk reproducer |
 
@@ -253,6 +253,16 @@ detached process holding the instance's port block. `sb create` and `sb
 create-server` are the same contract for a directory: a create that fails after
 allocating the instance directory removes the partial tree, so a retry starts
 clean instead of being refused with "already exists".
+
+That rollback only runs when the create failed on its own terms. A create that
+was killed, or that ran out of disk mid-copy, leaves the directory behind with
+no `instance.env` in it, and the auto-create path (`sb up`, `sb run`) would
+read it as an instance and fail on a contract nobody wrote. It removes such a
+directory and builds the instance instead (`ensure_instance`), and only when
+the directory holds nothing outside what a create writes: a directory carrying
+anything else was put there by a person and is refused by name, not deleted.
+`sb destroy` follows the same rule for the other end: an instance that is
+already gone is exit 0, like `sb stop`, because teardown is re-run.
 
 ## The contract (sibling harnesses)
 

@@ -12,6 +12,8 @@ so the contract is exercised without a 17 GB game tree:
 - a server that never binds fails inside the timeout and names its log,
 - an instance already running is refused, so two harnesses cannot double-bind
   one instance,
+- a bring-up re-run against the directory a killed create left behind builds
+  the instance instead of failing on a contract that was never written,
 - ``sb list`` reports the running instance as running, its idle neighbour as
   idle, and ``sb stop`` stops exactly that instance.
 
@@ -91,6 +93,42 @@ def make_instance(root: Path, name: str, port: int) -> Path:
     )
     (inst / "instance.props").write_text("", encoding="utf-8")
     return inst
+
+
+def make_server_base(root: Path) -> None:
+    """A server base whose dedicated is the fake listener.
+
+    `sb up` creates the instance itself when there is none, so a bring-up that
+    has to converge on a rerun needs a real base to build from.
+    """
+    base = root / "base" / "server-game"
+    (base / "Mods" / "0_TFP_Harmony").mkdir(parents=True)
+    binary = base / "7DaysToDieServer.x86_64"
+    binary.write_text(LISTENER.format(lifetime=FAKE_SERVER_LIFETIME_SEC), encoding="utf-8")
+    binary.chmod(0o755)
+    (base / "serverconfig.xml").write_text(
+        '<?xml version="1.0"?>\n<ServerSettings>\n</ServerSettings>\n', encoding="utf-8"
+    )
+
+
+def derived_block(root: Path, name: str) -> int:
+    """The port block a create-server will derive for `name` on this root."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "sbconfig.py"),
+            "port-block",
+            name,
+            "--instances",
+            str(root / "instances"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=UP_CALL_TIMEOUT_SEC,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return int(proc.stdout.strip())
 
 
 def run_up(root: Path, name: str, *, timeout: str, never_binds: bool = False, port: int = 0):
@@ -188,6 +226,43 @@ def test_up_refuses_an_instance_already_running(tmp: Path) -> None:
     finally:
         stop(pids)
     print("PASS up_refuses_an_instance_already_running")
+
+
+def test_up_rebuilds_an_instance_a_killed_create_left_behind(tmp: Path) -> None:
+    """The auto-create path converges when it is run again.
+
+    A create allocates the instance directory before the work that fills it, and
+    its rollback only runs when the create failed on its own terms, so a create
+    that was killed (or that ran out of disk mid-copy) left the directory
+    behind. The bring-up read that directory as an instance and died with
+    "missing instance.env" for a tree no create ever finished, and every retry
+    died the same way until somebody removed it by hand. The retry has to build
+    the instance instead, and it must leave a running instance alone.
+    """
+    make_server_base(tmp)
+    name = "srv-torn"
+    inst = tmp / "instances" / name
+    (inst / "game").mkdir(parents=True)
+    # As far as the killed create got: the directory and a partial game copy.
+    (inst / "game" / "7DaysToDieServer.x86_64").write_text("interrupted", encoding="utf-8")
+    port = derived_block(tmp, name)
+    pids: list[int] = []
+    try:
+        proc = run_up(tmp, name, timeout="30", port=port)
+        assert proc.returncode == 0, (
+            f"sb up did not rebuild the unfinished instance: {proc.stderr or proc.stdout}"
+        )
+        assert (inst / "instance.env").is_file(), "the rebuilt instance has no contract"
+        pids = server_pids(inst)
+        assert pids, "sb up rebuilt the instance but left no server running"
+        # Re-running against the instance it just built is the running-instance
+        # refusal, not a rebuild: convergence must never tear down a live server.
+        again = run_up(tmp, name, timeout="30", port=port)
+        assert again.returncode != 0 and "already running" in again.stderr, again.stderr
+        assert server_pids(inst), "the refused second bring-up stopped the running server"
+    finally:
+        stop(pids)
+    print("PASS up_rebuilds_an_instance_a_killed_create_left_behind")
 
 
 def test_up_fails_inside_its_timeout_and_names_the_log(tmp: Path) -> None:
@@ -298,6 +373,7 @@ def row_for(stdout: str, name: str) -> str:
 TESTS = (
     test_up_returns_and_orphans_the_server,
     test_up_refuses_an_instance_already_running,
+    test_up_rebuilds_an_instance_a_killed_create_left_behind,
     test_up_fails_inside_its_timeout_and_names_the_log,
     test_list_and_stop_see_the_running_instance,
     test_the_wait_deadline_is_monotonic,

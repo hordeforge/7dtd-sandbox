@@ -74,6 +74,22 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- `sb up` and `sb run` converge when they are run again against an instance
+  whose create never finished. A create allocates the instance directory
+  before the work that fills it, and its rollback only runs when the create
+  failed on its own terms, so a create that was killed (or that ran out of
+  disk mid-copy) left the directory behind. The bring-up read that directory
+  as an instance and died with "missing instance.env" on every retry, for a
+  tree no create ever finished. It now removes the directory and builds the
+  instance, and refuses a directory holding an entry no create writes rather
+  than deleting it.
+- `sb destroy` of an instance that is already gone exits 0, like `sb stop`
+  does. Teardown is re-run after a failed pass, and the refusal (exit 2,
+  "instance not found") also stopped `sb destroy a b` at the first name that
+  was gone, leaving the rest of the list standing.
+- `make check` was red on a clean clone (`EXE002`): the fuzz gate is
+  executable but had lost its shebang to a later edit, so the analyzer failed
+  the tree `make test` runs in the same pass.
 - `make check` was red on a clean checkout with the ruff CI pins: 45 findings
   across `sbconfig.py` and the two config gates (long lines, percent-format,
   magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a
