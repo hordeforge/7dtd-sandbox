@@ -54,6 +54,13 @@ Nothing is deprecated ahead of removal in this repository today.
   cannot expand, a zero step, `rm -rf "$DIR"/` with `DIR` unset) rather than
   the style preferences the tree does not follow. The tree passed all of them
   before they were enabled, so they are ratchets, not a backlog.
+- `scripts/test_sbconfig_fuzz.py` fuzzes the two parsers that read text this
+  repository does not control: the serverconfig template and a
+  `serveradmin.xml` left in an instance's userdata. Structure-aware documents
+  from a stock-shaped seed corpus, then byte-level mutation, with invariants a
+  fuzzer alone cannot see (write/read round trip, well-formed output, 0600
+  after a rewrite, declared admins at level 0, idempotence, per-call time
+  budget). Seeded and deterministic; a finding prints a shrunk reproducer.
 
 ### Fixed
 
@@ -96,6 +103,22 @@ Nothing is deprecated ahead of removal in this repository today.
   instead of running the requested `--timeout`. The deadline is elapsed time
   read from the kernel's uptime counter now, and
   `scripts/test_sb_up.py` pins the port wait to a monotonic source.
+- `sbconfig.py` refuses a property value carrying a C0 control (exit 2)
+  instead of writing it. XML cannot hold one in an attribute: a raw control
+  makes the config unparsable, and a tab, LF or CR is normalized to a space on
+  parse, so the game would read something other than the declared value.
+  Generated XML is read and written with `newline=""` for the same reason, so
+  text-mode newline translation no longer rewrites a declared CR.
+- `seed_admins` rewrites a `serveradmin.xml` that no XML parser accepts rather
+  than upserting into it. The upsert left the game reading the same broken
+  config with the declared admins missing.
+- The admin upsert keeps the closing tag of a paired `<user ...></user>` when
+  it adds a `permission_level`. It closed the start tag as if the element were
+  self-closing, orphaning `</user>` and producing a file no parser accepts.
+- `set_property` inserts a missing property before the first
+  `</ServerSettings>` that is not inside a comment. A template carrying the
+  closer only as a commented line got the property inserted into the comment,
+  where neither the game nor `sb get` reads it.
 - 0.2.0 shipped the client-window change as an unlabelled entry under `Fixed`,
   so the one breaking consumer change in that release (a client now follows
   the instance's `SB_RES` / `SB_FULLSCREEN` declaration instead of an ambient

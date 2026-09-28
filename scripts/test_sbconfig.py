@@ -442,6 +442,73 @@ def test_refuses_an_interpreter_below_the_declared_floor(tmp: Path) -> None:
     assert "needs Python" in err.getvalue(), err.getvalue()
 
 
+def test_seed_rewrites_unparsable_admin_file(tmp: Path) -> None:
+    """A file with a </users> that no parser accepts is rewritten, not upserted.
+
+    Upserting into it left the game reading the same broken config with the
+    declared admins missing.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text("</users>", encoding="utf-8")
+    text = _seed(tmp, "client-sg")
+    users = {u.get("userid"): u.get("permission_level") for u in ET.fromstring(text).iter("user")}
+    assert users.get("client-sg") == "0", users
+    print("PASS seed_rewrites_unparsable_admin_file")
+
+
+def test_seed_upserts_paired_user_without_level(tmp: Path) -> None:
+    """A paired <user></user> with no permission_level keeps its closing tag."""
+    _seed(tmp, "client-sg")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.write_text(
+        admin.read_text(encoding="utf-8").replace(
+            'userid="client-sg" name="client-sg" permission_level="0" />',
+            'userid="client-sg" name="client-sg"></user>',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    text = _seed(tmp, "client-sg")
+    users = {u.get("userid"): u.get("permission_level") for u in ET.fromstring(text).iter("user")}
+    assert users.get("client-sg") == "0", users
+    assert "</user>" in text, "the paired form lost its closing tag"
+    print("PASS seed_upserts_paired_user_without_level")
+
+
+def test_value_xml_cannot_carry_is_refused(tmp: Path) -> None:
+    """A CR or a NUL in a value is refused, not written into the config.
+
+    A C0 control is not a legal XML token, and a tab, LF or CR is normalized
+    to a space on parse, so either would reach the game as something other than
+    the declared value.
+    """
+    src = tmp / "in.xml"
+    src.write_text(STOCK, encoding="utf-8")
+    dst = tmp / "never.xml"
+    for value in ("a\r\nb", "a\x00b", "a\tb"):
+        assert sbconfig.main(["render", str(src), str(dst), "--set", f"ServerName={value}"]) == 2, value
+        assert not dst.exists(), f"{value!r} still wrote a config"
+    print("PASS value_xml_cannot_carry_is_refused")
+
+
+def test_insert_skips_a_commented_closer(tmp: Path) -> None:
+    """A </ServerSettings> that only appears inside a comment is not an anchor.
+
+    Inserting before it put the property inside the comment, where neither the
+    game nor `get` reads it.
+    """
+    only_commented = (
+        '<?xml version="1.0"?>\n<ServerSettings>\n'
+        '\t<property name="ServerPort" value="26900"/>\n'
+        '\t<!-- </ServerSettings> -->\n</ServerSettings>\n'
+    )
+    out = render(tmp, "GameWorld=Navezgane", src_text=only_commented)
+    assert active_values(out, "GameWorld") == ["Navezgane"], out
+    assert '<!-- </ServerSettings> -->' in out, out
+    print("PASS insert_skips_a_commented_closer")
+
+
 TESTS = (
     test_rewrites_active_property,
     test_leaves_commented_property_commented,
@@ -470,6 +537,10 @@ TESTS = (
     test_get_refuses_a_non_utf8_config,
     test_port_block_hashes_an_undecodable_name,
     test_refuses_an_interpreter_below_the_declared_floor,
+    test_seed_rewrites_unparsable_admin_file,
+    test_seed_upserts_paired_user_without_level,
+    test_value_xml_cannot_carry_is_refused,
+    test_insert_skips_a_commented_closer,
 )
 
 

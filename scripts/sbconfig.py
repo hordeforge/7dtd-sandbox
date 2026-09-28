@@ -52,6 +52,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape, unescape
 
 # Seeded even when no client instance exists yet, so a server-only create still
@@ -100,7 +101,19 @@ ADMIN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def xml_attr(text: str) -> str:
-    """Escape for a double-quoted XML attribute value."""
+    """Escape for a double-quoted XML attribute value.
+
+    Refuses a value XML cannot carry verbatim. A C0 control is not a legal
+    token at all, and tab/LF/CR are attribute-value normalized to a space on
+    parse, so writing one would either produce a config no parser accepts or a
+    value the game reads back as something other than what was declared. A
+    declaration is refused, not silently altered.
+    """
+    bad = next((c for c in text if ord(c) < 0x20), None)
+    if bad is not None:
+        raise ValueError(
+            f"value carries U+{ord(bad):04X}, which an XML attribute cannot hold"
+        )
     return escape(text, {'"': "&quot;"})
 
 
@@ -114,7 +127,9 @@ def _in_comment(text: str, index: int) -> bool:
 def set_property(text: str, key: str, value: str) -> str:
     """Return `text` with every active property `key` set to `value`.
 
-    Inserts the property before </ServerSettings> when no active one exists.
+    Inserts the property before the first active </ServerSettings> when no
+    active one exists. An insert before a commented-out closer would land the
+    property inside a comment, where neither the game nor `get` reads it.
     """
     pattern = re.compile(rf'(<property\s+name="{re.escape(key)}"\s+value=")([^"]*)(")')
     escaped = xml_attr(value)
@@ -132,10 +147,15 @@ def set_property(text: str, key: str, value: str) -> str:
         pieces.append(text[cursor:])
         return "".join(pieces)
 
-    inserted = f'  <property name="{xml_attr(key)}" value="{escaped}"/>\n{SETTINGS_CLOSER}'
-    if SETTINGS_CLOSER not in text:
-        raise ValueError(f"no active property {key!r} and no {SETTINGS_CLOSER} to insert before")
-    return text.replace(SETTINGS_CLOSER, inserted, 1)
+    anchor = text.find(SETTINGS_CLOSER)
+    while anchor != -1 and _in_comment(text, anchor):
+        anchor = text.find(SETTINGS_CLOSER, anchor + 1)
+    if anchor == -1:
+        raise ValueError(
+            f"no active property {key!r} and no active {SETTINGS_CLOSER} to insert before"
+        )
+    inserted = f'  <property name="{xml_attr(key)}" value="{escaped}"/>\n'
+    return text[:anchor] + inserted + text[anchor:]
 
 
 def active_value(text: str, key: str) -> str | None:
@@ -168,7 +188,7 @@ def render(
 ) -> str:
     """Render `src` into `dst` with the given property values. Returns the text."""
     try:
-        text = src.read_text(encoding="utf-8")
+        text = src.read_text(encoding="utf-8", newline="")
     except (OSError, UnicodeDecodeError) as ex:
         # A user-edited template can be non-UTF-8 or unreadable. Name the file
         # and the reason instead of a bare traceback: this runs after the
@@ -330,9 +350,14 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     if permission.search(new):
         new = permission.sub(lambda m: m.group(1) + "0" + m.group(3), new, count=1)
     else:
-        # No permission_level at all: add it to whichever of the self-closing
-        # and paired forms the depot shipped.
-        new = re.sub(r"\s*/?>$", ' permission_level="0" />', new)
+        # No permission_level at all: add it, keeping whichever of the
+        # self-closing and paired forms the depot shipped. Closing the matched
+        # start tag on a paired element would orphan its </user> and leave a
+        # serveradmin.xml no parser accepts.
+        if old.endswith("/>"):
+            new = old[:-2].rstrip() + ' permission_level="0" />'
+        else:
+            new = old[:-1].rstrip() + ' permission_level="0">'
     if new == old:
         return text, False
     return text[: match.start()] + new + text[match.end() :], True
@@ -350,21 +375,25 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     users_block = "\n".join(_user_line(n) for n in names)
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file():
-        out.write_text(ADMIN_TEMPLATE.format(users=users_block), encoding="utf-8")
+        out.write_text(ADMIN_TEMPLATE.format(users=users_block), encoding="utf-8", newline="")
         _restrict(out)
         return True
 
     try:
-        text = out.read_text(encoding="utf-8")
+        # newline="": text mode would translate a declared CR into CRLF, so a
+        # rewrite would change the bytes it was supposed to leave alone.
+        text = out.read_text(encoding="utf-8", newline="")
     except UnicodeDecodeError as ex:
         raise RuntimeError(
             f"{out} is not valid UTF-8 ({ex}); refusing to rewrite it, because "
             "the rewrite would replace the bad bytes and lose the names in them"
         ) from ex
     text = text.lstrip("\ufeff")
-    if USERS_CLOSER not in text:
+    if USERS_CLOSER not in text or not _wellformed(text):
         # Malformed or unexpected shape: a rewrite from template is the only
-        # way to guarantee the Local admins the sandbox contract promises.
+        # way to guarantee the Local admins the sandbox contract promises. An
+        # upsert into a file no XML parser accepts would leave the game reading
+        # that same broken config, with the declared names missing.
         _atomic_write(out, ADMIN_TEMPLATE.format(users=users_block))
         return True
 
@@ -375,6 +404,15 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     if changed:
         _atomic_write(out, text)
     return changed
+
+
+def _wellformed(text: str) -> bool:
+    """True when a strict XML parser accepts `text` as a whole document."""
+    try:
+        ElementTree.fromstring(text)
+    except (ElementTree.ParseError, ValueError):
+        return False
+    return True
 
 
 def _restrict(path: Path) -> None:
@@ -394,9 +432,13 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     """
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # newline="": text mode would translate a declared CR into CRLF, so the
+        # value `sb get` reads back would not be the value that was declared.
+        tmp.write_text(text, encoding="utf-8", newline="")
         # The rendered config can carry TelnetPassword, and serveradmin.xml a
-        # level-0 admin list; keep both user-only.
+        # level-0 admin list; keep both user-only. The temp carries the same
+        # content as the file it replaces, so replacing a 0600 file with one
+        # at the umask default would widen it to every local user.
         try:
             tmp.chmod(mode)
         except OSError as ex:
@@ -428,7 +470,12 @@ def cmd_render(args: argparse.Namespace) -> int:
         return 2
     try:
         render(args.src, args.dst, userdata=args.userdata, sets=sets)
-    except (RuntimeError, ValueError) as ex:
+    except ValueError as ex:
+        # A refused declaration: the value cannot be written as a property
+        # this game would read back.
+        print(f"ERROR: {ex}", file=sys.stderr)
+        return 2
+    except RuntimeError as ex:
         print(f"ERROR: {ex}", file=sys.stderr)
         return 1
     print(f"config -> {args.dst}")
@@ -439,7 +486,7 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
     names = list(dict.fromkeys([*args.names, *DEFAULT_ADMIN_NAMES]))
     try:
         changed = seed_admins(args.userdata / "Saves" / "serveradmin.xml", names)
-    except (OSError, RuntimeError) as ex:
+    except (OSError, RuntimeError, ValueError) as ex:
         print(f"ERROR: {ex}", file=sys.stderr)
         return 1
     if changed:
@@ -452,7 +499,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     # read back by a caller deciding what the game will see, and a replacement
     # character in it is indistinguishable from a character the config holds.
     try:
-        text = args.config.read_text(encoding="utf-8")
+        text = args.config.read_text(encoding="utf-8", newline="")
     except UnicodeDecodeError as ex:
         print(f"ERROR: {args.config} is not valid UTF-8: {ex}", file=sys.stderr)
         return 1
