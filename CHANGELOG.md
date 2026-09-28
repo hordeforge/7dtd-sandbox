@@ -122,6 +122,14 @@ Nothing is deprecated ahead of removal in this repository today.
   fuzzer alone cannot see (write/read round trip, well-formed output, 0600
   after a rewrite, declared admins at level 0, idempotence, per-call time
   budget). Seeded and deterministic; a finding prints a shrunk reproducer.
+- `make test-one GATE=scripts/test_sb_cli.sh` runs a single gate, with the
+  interpreter picked from the suffix (a `.sh` gate under bash, a `.py` gate
+  under python3), which is the loop `make test` is too slow to be. `ARGS` goes
+  to the gate, so the fuzzer's `--iters`/`--seed` are reachable from here. A
+  `GATE` that names no file, or names one `make test` does not run, is exit 2
+  and lists the gates. It is in `make help` and the README, and
+  `scripts/test_sb_cli.sh` holds both, so the discoverability is a gate rather
+  than a line of prose.
 
 ### Fixed
 
@@ -163,6 +171,13 @@ Nothing is deprecated ahead of removal in this repository today.
   followed by `mkdir -p`, and `-p` succeeds against a directory the other
   create had just made, so both copies wrote into one tree. The claim is now
   the `mkdir` itself, which is the one allocation the filesystem makes atomic.
+- `scripts/test_sb_cli.sh` died on a name error instead of finishing. The
+  window-fallback case sources `env_value` out of `scripts/sb` with sed, and
+  `env_value` calls `unquote_value`, which the extraction did not bring with
+  it: the gate exited 1 on `unquote_value: command not found` before it could
+  reach any later case, so `make test` (and CI) was red. The extraction carries
+  the dependency now, and `require_fn` names it if a future rename drops it
+  again, which is what the helper is there for.
 - An interrupted run left what it owned in the instance tree. `sb` registers
   the staging tree a copy is written into, the tree it moves aside to replace
   one, the `instance.props` temp and the directory a create is half-building,

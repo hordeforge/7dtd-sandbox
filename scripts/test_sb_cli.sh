@@ -698,6 +698,7 @@ $(sed -n '/^SB_DEFAULT_FULLSCREEN=/p' "$SB")
 $(sed -n '/^unquote_value()/,/^}/p' "$SB")
 $(sed -n '/^env_value()/,/^}/p' "$SB")
 $(sed -n '/^declared_window()/,/^}/p' "$SB")"
+require_fn unquote_value env_value declared_window
 # shellcheck disable=SC2154 # the two defaults are sourced out of sb above
 want_window="$SB_DEFAULT_RES $SB_DEFAULT_FULLSCREEN"
 read -r win_res win_fs < <(declared_window "$TMP/instances/nodeclared")
@@ -716,6 +717,30 @@ for needle in "SERVER_BASE_GAME=" "SERVER_APPID=" "STEAM_APPID=" "SB_CONFIG=" \
   grep -qF "$needle" <<<"$init_out" \
     || { echo "FAIL: sb init does not report $needle" >&2; fail=1; }
 done
+
+# --- the contributor's edit-test loop ---------------------------------------
+
+# `make test` is the whole verdict and is right before a push, not between two
+# edits, so there has to be a way to run one gate, and the way has to be
+# discoverable from `make help` rather than tribal memory about which
+# interpreter a given scripts/test_* file wants.
+make_help="$(make -C "$ROOT" help)"
+grep -q "test-one" <<<"$make_help" \
+  || { echo "FAIL: make help does not name test-one" >&2; fail=1; }
+check "test-one with no GATE is a usage error" 2 env -u GATE \
+  make -C "$ROOT" test-one
+check "test-one on a file that is not a gate is a usage error" 2 \
+  make -C "$ROOT" test-one GATE=scripts/sb
+# A gate run through it, so the target is a loop and not a refusal: the release
+# gate is pure file checks, costs nothing, and does not recurse into make test.
+# GATE is passed explicitly on both make lines, because make exports a
+# command-line variable into the recipe's environment: the `no GATE` case
+# without env -u inherits the GATE this gate was itself run with and
+# re-enters test-one on it.
+check "test-one runs a real gate" 0 make -C "$ROOT" test-one \
+  GATE=scripts/test_sb_release.sh
+grep -q "make test-one" "$ROOT/README.md" \
+  || { echo "FAIL: the README does not document make test-one" >&2; fail=1; }
 
 if [[ "$fail" -ne 0 ]]; then
   echo "sb_cli: FAILED" >&2
