@@ -612,7 +612,13 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
         print(f"ERROR: {ex}", file=sys.stderr)
         return 1
     if changed:
-        print(f"seeded serveradmin.xml (Local admins: {', '.join(names)})")
+        # stderr, not stdout: `sb up` runs this on its stdout path, whose whole
+        # content is the instance contract, and a status line there broke
+        # `eval "$(sb up <name>)"`.
+        print(
+            f"seeded serveradmin.xml (Local admins: {', '.join(names)})",
+            file=sys.stderr,
+        )
     return 0
 
 

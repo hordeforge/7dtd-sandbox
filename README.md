@@ -155,9 +155,30 @@ CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 | `sb wipe <name> [name...]` | reset game, Mods, saves/userdata to pristine |
 | `sb destroy <name> [name...]` | remove instances (one already gone is exit 0, so a re-run teardown converges) |
 | `sb list` / `sb status <name>` | instances and running state |
-| `sb logs <name> [-f]` | client or server log |
+| `sb logs <name> [-f \| --follow]` | client or server log |
 | `sb env <name>` | eval-able contract for sibling harnesses |
 | `sb version` | the shipped version (canonical home: `SB_VERSION` in `scripts/sb`) |
+
+Every verb takes `--help`, which prints the flags that verb accepts and
+whether its examples; `sb help <command>` prints the same page.
+
+```bash
+./scripts/sb --help            # the command list and the env contract
+./scripts/sb up --help         # one page per verb
+./scripts/sb stpo              # exit 2, and the command that was meant
+```
+
+## Exit codes and streams
+
+`0` the command succeeded, `2` the command line was wrong (an unknown verb, a
+missing argument, a refused flag, an invalid name), `1` the command was
+understood and the run failed (no base, a copy that failed, a server that
+never bound). A wrong name near a real one is answered with the real one.
+
+A line prefixed `sb:` is a diagnostic and goes to stderr. stdout carries data
+only, so these can be piped or evaluated as they are: `sb up` and `sb env`
+(the contract), `sb list` and `sb status` (the rows), `sb logs` (the log
+lines).
 
 ## Driving an instance from a harness
 

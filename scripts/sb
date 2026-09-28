@@ -128,13 +128,49 @@ sb_on_signal() {
 }
 
 die() { echo "sb: $*" >&2; exit 1; }
-# Exit 2 for a refused flag, a bad declaration, a missing instance, and the
-# "missing argument" guards of up, stage, render-config and create-server. The
-# older verbs (run, create, launch, status, ...) still report a missing
-# argument through die, so they exit 1; scripts/test_sb_cli.sh pins that, so
-# the split is deliberate rather than an oversight.
+# Exit 2 for every usage error: a refused flag, a bad declaration, a missing
+# instance, an invalid name, an unknown command, and a missing argument. Exit 1
+# is reserved for a command that was understood and failed (a missing base, a
+# copy that ran out of space, a server that never bound), so a script can tell
+# "you called me wrong" from "the run failed" without parsing messages.
 usage_err() { echo "sb: $*" >&2; exit 2; }
 warn() { echo "sb: WARN: $*" >&2; }
+# Every verb the dispatcher knows, so an unknown one can be answered with a
+# near match rather than a bare refusal.
+COMMANDS=(
+  init doctor fetch-base fetch-server-base
+  run create create-server up stage render-config
+  launch launch-server wipe destroy stop
+  list status logs env version help
+)
+
+# The command an unknown one most likely meant. Two passes: the shortest known
+# command that starts with, or contains, what was typed; failing that, the
+# shortest one sharing its first two characters, which is what catches the
+# transposed or truncated verb ("stpo" -> stop, "logsx" -> logs). Nothing
+# matches a word that is not near a verb, so the command list is offered
+# instead of a guess.
+suggest_command() {
+  local input="$1" c best="" stem="${1:0:2}"
+  (( ${#input} >= 2 )) || return 0
+  for c in "${COMMANDS[@]}"; do
+    if [[ "$c" == "$input"* || "$c" == *"$input"* ]]; then
+      if [[ -z "$best" || ${#c} -lt ${#best} ]]; then best="$c"; fi
+    fi
+  done
+  if [[ -z "$best" ]]; then
+    for c in "${COMMANDS[@]}"; do
+      if [[ "$c" == "$stem"* ]]; then
+        if [[ -z "$best" || ${#c} -lt ${#best} ]]; then best="$c"; fi
+      fi
+    done
+  fi
+  if [[ -n "$best" ]]; then
+    printf "  did you mean 'sb %s'?\n" "$best" >&2
+  else
+    printf "  run 'sb help' for the command list.\n" >&2
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -191,7 +227,246 @@ Host: Linux, bash, and that python3 on PATH (sb doctor reports both).
 Credentials: STEAMCMD_USER is the account name; the password is never read
 from the environment (it would have to reach steamcmd as an argument, which
 the process table exposes). 'sb fetch-base' prompts for it on a terminal.
+
+Every command takes --help: 'sb help <command>' and 'sb <command> --help'
+print the same page, so a caller never has to guess a flag.
+
+Exit codes: 0 success, 1 the run failed, 2 the command line was wrong.
+
+Output: a line prefixed 'sb:' is a diagnostic and goes to stderr. stdout
+carries data only, so these can be piped or evaluated as they are:
+  sb up <name>       the contract (progress and diagnostics go to stderr)
+  sb env <name>      the contract
+  sb list | status   the rows
+  sb logs <name>     the log lines
 EOF
+}
+
+# One page per verb, reached by 'sb help <command>' or 'sb <command> --help'.
+# A page states the usage line, what the verb does, its own flags, and one
+# worked example, because the general page lists the verbs but not their flags.
+usage_for() {
+  case "$1" in
+    run) cat <<'EOF'
+Usage: sb run <client|server|both> <name> [-- args...]
+
+Start an instance, creating it on first use. Blocks until the game exits.
+
+  client  client only, under Proton, no Steam
+  server  dedicated server only, native
+  both    server + client; the client auto-joins the server
+
+Everything after '--' is passed to the game unchanged. 'both' names its
+instances srv-<name> and client-<name> and stops them with 'sb stop' on both.
+
+Examples:
+  sb run both lab
+  sb run client client-lab -- -connect=127.0.0.1:27535
+EOF
+      ;;
+    create) cat <<'EOF'
+Usage: sb create <name> [--res WxH] [--fullscreen 0|1]
+
+Create a fresh client instance: a reflinked game copy, its own Proton prefix,
+and its declared window. Refuses a name that already exists.
+
+  --res WxH        windowed resolution, recorded in the instance (default 1280x720)
+  --fullscreen 0|1 0 windowed (default), 1 fullscreen; a sandbox client is a
+                   test fixture, so it stays windowed
+
+The window is declared once here and read from the instance at every launch,
+so the same instance opens the same window on any machine.
+
+Example: sb create client-lab --res 1920x1080
+EOF
+      ;;
+    create-server) cat <<'EOF'
+Usage: sb create-server <name> [--admin NAME]...
+
+Create a fresh server instance: a reflinked game copy, a name-derived 5-port
+block, and the declared Local admins. Refuses a name that already exists.
+
+  --admin NAME     admit this Local player name at permission_level=0.
+                   NAME matches [A-Za-z0-9._-]; repeatable.
+
+'sb up' creates a server instance on its own, so this is only needed to set up
+an instance ahead of the bring-up. The contract is read back with 'sb env'.
+
+Example: sb create-server srv-lab --admin alice
+EOF
+      ;;
+    up) cat <<'EOF'
+Usage: sb up <name> [--timeout N]
+
+Start a server instance detached, block until its game port accepts
+connections, then print the instance contract on stdout. Creates the instance
+on first use. Exits non-zero, and stops the server it started, if the port
+never opens.
+
+  --timeout N      seconds to wait for the port (default 180)
+
+The contract is the only thing on stdout, so the call can be evaluated:
+
+  eval "$(sb up srv-lab --timeout 240)"
+
+Progress and diagnostics go to stderr.
+EOF
+      ;;
+    launch|launch-server) cat <<'EOF'
+Usage: sb launch <name> [-- args...] | sb launch-server <name> [-- args...]
+
+Run an existing instance in the foreground and block. 'launch' is the client
+under Proton (no Steam), 'launch-server' the dedicated server. Everything
+after '--' is passed to the game unchanged; a '-screen-*' argument there
+overrides the window the instance declared.
+
+The instance is not created here: 'sb create' / 'sb create-server' first, or
+'up' for a server.
+
+Examples:
+  sb launch client-lab
+  sb launch-server srv-lab -- -logfile /tmp/srv.log
+EOF
+      ;;
+    stage) cat <<'EOF'
+Usage: sb stage <name> <mod-dir> [mod-dir...]
+
+Copy built modlets into the instance's game/Mods. A mod-dir is a directory
+holding ModInfo.xml. Re-staging a modlet replaces the copy the instance runs;
+a replacement that fails leaves the previous one in place.
+EOF
+      ;;
+    render-config) cat <<'EOF'
+Usage: sb render-config <name> KEY=VALUE [KEY=VALUE...]
+
+Declare serverconfig properties for an instance. The config is rebuilt from
+the pristine base template plus every declaration, so nothing carries over
+from a previous run and undeclaring a key returns it to the stock value.
+
+  KEY        [A-Za-z_][A-Za-z0-9_]*, the property name the game reads
+  VALUE      one line, valid UTF-8
+
+ServerPort, TelnetPort and UserDataFolder are instance-owned and refused: the
+instance allocated the ports, and a config that disagrees sends every harness
+at a port nothing binds.
+
+Example: sb render-config srv-lab GameWorld=Navezgane MaxSpawnedZombies=0
+EOF
+      ;;
+    stop) cat <<'EOF'
+Usage: sb stop <name> [name...]
+
+Stop only these instances' processes: TERM, then KILL what is still standing.
+Matching is by the instance's own marker (SB_INSTANCE for a server,
+STEAM_COMPAT_DATA_PATH for a client), never by process-name pattern, so one
+instance's teardown never touches another's. Exits 0 for an instance that is
+not running.
+EOF
+      ;;
+    wipe) cat <<'EOF'
+Usage: sb wipe <name> [name...]
+
+Reset instances to pristine base state: game, Mods, and saves (plus userdata
+and the declared config on a server). The instance keeps its identity, port
+block and admins; its declared serverconfig properties go with the state they
+configured. Refuses an instance that is running.
+EOF
+      ;;
+    destroy) cat <<'EOF'
+Usage: sb destroy <name> [name...]
+
+Remove instances entirely, game tree and Proton prefix included. A running
+instance is stopped first. This cannot be undone; 'sb wipe' resets state and
+keeps the instance.
+EOF
+      ;;
+    list) cat <<'EOF'
+Usage: sb list
+
+One row per instance: name, kind (client/server), running state, and path.
+EOF
+      ;;
+    status) cat <<'EOF'
+Usage: sb status <name>
+
+One instance's state and paths, followed by its instance.env contract.
+EOF
+      ;;
+    logs) cat <<'EOF'
+Usage: sb logs <name> [--follow]
+
+Print the last 40 lines of the instance's log, or follow it.
+
+  -f, --follow    keep tailing the log as it grows
+
+The log is chosen by instance kind: logs/server.log for a server,
+logs/output_log_client.txt for a client.
+EOF
+      ;;
+    env) cat <<'EOF'
+Usage: sb env <name>
+
+Print the instance contract as 'export KEY=VALUE' lines, quoted so a value
+carrying a quote or a command substitution stays data. The documented consumer
+is an eval:
+
+  eval "$(sb env srv-lab)"
+
+Both instance kinds print it, a client including the resolved SB_SCREEN_ARGS.
+EOF
+      ;;
+    fetch-base) cat <<'EOF'
+Usage: sb fetch-base [--validate | --seed-from-steam]
+
+steamcmd-pull the pristine client base (the Windows depot is forced, the
+sibling ecosystem targets the Windows build under Proton). Needs a Steam
+account: the client is a paid app, so it is fetched as STEAMCMD_USER, whose
+password steamcmd prompts for on a terminal.
+
+  --validate            let steamcmd hash-verify every file (off by default:
+                        the sandbox's rule is that Steam never owns these files)
+  --seed-from-steam     reflink the base from an existing Steam install
+                        (STEAM_SEED_SOURCE) instead of downloading
+
+Refuses a base inside a Steam library, and refuses an exported STEAMCMD_PASS.
+EOF
+      ;;
+    fetch-server-base) cat <<'EOF'
+Usage: sb fetch-server-base [--validate]
+
+steamcmd-pull the pristine dedicated-server base (app 294420, anonymous).
+
+  --validate            let steamcmd hash-verify every file (off by default)
+
+Refuses a base inside a Steam library.
+EOF
+      ;;
+    doctor|init) cat <<'EOF'
+Usage: sb doctor | sb init
+
+Report host readiness: sandbox paths, Proton, steamcmd, the Python sbconfig.py
+needs, both bases and what mods they ship, reflink support, and the
+Steam-ownership guard. 'init' prints the first part only and creates the
+directory layout.
+EOF
+      ;;
+    version) cat <<'EOF'
+Usage: sb version
+
+Print the shipped version. The canonical declaration is SB_VERSION in scripts/sb.
+EOF
+      ;;
+    help) usage ;;
+    -h|--help|"") usage ;;
+    *)
+      # A name that is not a verb gets the same answer as typing it: the
+      # refusal names what it is near, and a help request does not launder an
+      # unknown command into a successful exit.
+      echo "sb: unknown command '$1'" >&2
+      suggest_command "$1"
+      exit 2
+      ;;
+  esac
 }
 
 # --- detection -------------------------------------------------------------
@@ -236,7 +511,7 @@ detect_proton() {
 # --- instance plumbing -----------------------------------------------------
 
 validate_name() {
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid instance name '$1' (use [A-Za-z0-9._-], not starting with '-')"
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid instance name '$1' (use [A-Za-z0-9._-], not starting with '-')"
 }
 
 # One declared value from an instance's instance.env, or empty. Every reader
@@ -621,7 +896,7 @@ cmd_fetch() {
   # never owns these files; pass --validate to opt in.
   local validate=()
   case "${1:-}" in
-    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" ;;
+    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" >&2 ;;
     --seed-from-steam) cmd_seed_from_steam; return 0 ;;
     "") ;;
     *) usage_err "unknown fetch-base option '$1' (--validate | --seed-from-steam)" ;;
@@ -664,7 +939,7 @@ cmd_seed_from_steam() {
   [[ -f "$src/7DaysToDie.exe" ]] || die "seed source is not a 7DTD install: $src"
   assert_not_steam_owned "$BASE_GAME" "base game"
   if [[ -d "$BASE_GAME" && -f "$BASE_GAME/7DaysToDie.exe" ]]; then
-    echo "sb: base already present at $BASE_GAME; delete it first to re-seed"
+    echo "sb: base already present at $BASE_GAME; delete it first to re-seed" >&2
     return 1
   fi
   mkdir -p "$(dirname "$BASE_GAME")"
@@ -678,7 +953,7 @@ cmd_seed_from_steam() {
 cmd_fetch_server_base() {
   local validate=()
   case "${1:-}" in
-    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" ;;
+    --validate) validate=(-validate); echo "sb: steam data-file validation enabled (--validate)" >&2 ;;
     "") ;;
     *) usage_err "unknown fetch-server-base option '$1' (--validate)" ;;
   esac
@@ -1224,7 +1499,7 @@ cmd_destroy() {
     return 0
   fi
   if [[ -n "$(instance_procs "$inst")" ]]; then
-    echo "sb: instance '$name' is running; stopping it first"
+    echo "sb: instance '$name' is running; stopping it first" >&2
     terminate_instance "$inst"
   fi
   rm -rf "$inst"
@@ -1427,13 +1702,13 @@ cmd_stop() {
   validate_name "$name"
   inst="$INSTANCES_DIR/$name"
   if [[ ! -d "$inst" ]]; then
-    echo "sb: instance '$name' is not running"
+    echo "sb: instance '$name' is not running" >&2
     return 0
   fi
   local pids
   mapfile -t pids < <(instance_procs "$inst")
   if [[ ${#pids[@]} -eq 0 ]]; then
-    echo "sb: instance '$name' is not running"
+    echo "sb: instance '$name' is not running" >&2
     return 0
   fi
   echo "stopping instance '$name'"
@@ -1442,7 +1717,15 @@ cmd_stop() {
 }
 
 cmd_logs() {
-  local name="$1" inst kind
+  local name="$1" inst kind follow=""
+  [[ $# -ge 1 ]] && shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=1 ;;
+      *) usage_err "unknown logs option '$1' (-f | --follow)" ;;
+    esac
+    shift
+  done
   inst="$(instance_dir "$name")"
   kind="$(instance_kind "$inst")"
   local logfile
@@ -1452,7 +1735,7 @@ cmd_logs() {
     logfile="$inst/logs/output_log_client.txt"
   fi
   [[ -f "$logfile" ]] || die "no log yet at $logfile"
-  if [[ "${2:-}" == "-f" ]]; then
+  if [[ -n "$follow" ]]; then
     tail -f "$logfile"
   else
     tail -n 40 "$logfile"
@@ -1681,7 +1964,10 @@ cmd_up() {
     terminate_instance "$inst"
     die "server '$name' did not open port $port in ${timeout}s; check $inst/logs/server.log"
   fi
-  echo "server '$name' up on port $port (telnet $telnet_port)"
+  # stdout is the contract and nothing else: the documented caller is
+  # `eval "$(sb up <name>)"`, which a status line on stdout would break. The
+  # progress line a person reads goes to stderr, where it does not collide.
+  echo "server '$name' up on port $port (telnet $telnet_port)" >&2
   cmd_env "$name"
 }
 
@@ -1774,24 +2060,35 @@ cmd_run() {
 main() {
   local cmd="${1:-help}"
   shift || true
+  # 'sb <command> --help' prints that command's page, whatever the command
+  # would otherwise do with the argument. Checked here rather than in each
+  # parser so no verb has to grow the case, and so a flag a verb does not know
+  # still reaches the help instead of a bare "unknown option".
+  if (($#)) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    case "$cmd" in
+      -h|--help|help|"") usage ;;
+      *) usage_for "$cmd" ;;
+    esac
+    return 0
+  fi
   case "$cmd" in
     init) cmd_init ;;
     doctor) cmd_doctor ;;
     fetch-base|fetch) cmd_fetch "${1:-}" ;;
     fetch-server-base) cmd_fetch_server_base "${1:-}" ;;
     run)
-      [[ $# -ge 2 ]] || die "usage: sb run <client|server|both> <name> [-- args...]"
+      [[ $# -ge 2 ]] || usage_err "usage: sb run <client|server|both> <name> [-- args...]"
       local rmode="$1" rname="$2"; shift 2
       [[ "${1:-}" == "--" ]] && shift
       cmd_run "$rmode" "$rname" "$@"
       ;;
     create)
-      [[ $# -ge 1 ]] || die "usage: sb create <name> [--res WxH] [--fullscreen 0|1]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb create <name> [--res WxH] [--fullscreen 0|1]"
       local crname="$1"; shift
       cmd_create "$crname" "$@"
       ;;
     create-server)
-      [[ $# -ge 1 ]] || die "usage: sb create-server <name> [--admin NAME...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb create-server <name> [--admin NAME...]"
       local csname="$1"; shift
       local cadmins=()
       while [[ $# -gt 0 ]]; do
@@ -1819,36 +2116,46 @@ main() {
       cmd_render_config "$rname" "$@"
       ;;
     destroy)
-      [[ $# -ge 1 ]] || die "usage: sb destroy <name> [name...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb destroy <name> [name...]"
       local dn; for dn in "$@"; do cmd_destroy "$dn"; done
       ;;
     wipe)
-      [[ $# -ge 1 ]] || die "usage: sb wipe <name> [name...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb wipe <name> [name...]"
       local wn; for wn in "$@"; do cmd_wipe "$wn"; done
       ;;
     list|ls) cmd_list ;;
-    status) [[ $# -ge 1 ]] || die "usage: sb status <name>"; cmd_status "$1" ;;
+    status) [[ $# -ge 1 ]] || usage_err "usage: sb status <name>"; cmd_status "$1" ;;
     launch|run-launch)
-      [[ $# -ge 1 ]] || die "usage: sb launch <name> [-- args...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb launch <name> [-- args...]"
       local lname="$1"; shift
       [[ "${1:-}" == "--" ]] && shift
       cmd_launch "$lname" "$@"
       ;;
     launch-server)
-      [[ $# -ge 1 ]] || die "usage: sb launch-server <name> [-- args...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb launch-server <name> [-- args...]"
       local lsname="$1"; shift
       [[ "${1:-}" == "--" ]] && shift
       cmd_launch_server "$lsname" "$@"
       ;;
     stop)
-      [[ $# -ge 1 ]] || die "usage: sb stop <name> [name...]"
+      [[ $# -ge 1 ]] || usage_err "usage: sb stop <name> [name...]"
       local sn; for sn in "$@"; do cmd_stop "$sn"; done
       ;;
-    logs) [[ $# -ge 1 ]] || die "usage: sb logs <name> [-f]"; cmd_logs "$1" "${2:-}" ;;
-    env) [[ $# -ge 1 ]] || die "usage: sb env <name>"; cmd_env "$1" ;;
+    logs) [[ $# -ge 1 ]] || usage_err "usage: sb logs <name> [--follow]"; cmd_logs "$1" "${@:2}" ;;
+    env) [[ $# -ge 1 ]] || usage_err "usage: sb env <name>"; cmd_env "$1" ;;
     version|--version|-V) echo "sb $SB_VERSION" ;;
-    help|-h|--help|"") usage ;;
-    *) die "unknown command '$cmd' (see 'sb help')" ;;
+    help|-h|--help|"")
+      if (($#)) && [[ "$1" != -h && "$1" != --help ]]; then
+        usage_for "$1"
+      else
+        usage
+      fi
+      ;;
+    *)
+      echo "sb: unknown command '$cmd'" >&2
+      suggest_command "$cmd"
+      exit 2
+      ;;
   esac
 }
 

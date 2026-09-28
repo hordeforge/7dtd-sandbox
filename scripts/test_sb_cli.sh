@@ -33,10 +33,21 @@ check() { # check <desc> <expected-rc> <cmd...>
 check "help exits 0"            0 "$SB" help
 check "no args = help"          0 "$SB"
 check "-h is help"              0 "$SB" -h
-check "unknown command dies"    1 "$SB" definitely-not-a-command
-check "bare run dies"           1 "$SB" run
-check "run missing name dies"   1 "$SB" run client
+# A wrong command line is exit 2 on every path, not only on the verbs that
+# happen to route through usage_err: a script that told itself "0 ok, 2 my
+# fault, 1 the run failed" could not rely on it while `sb stpo` and a bare
+# `sb create` still reported the same code as a server that never bound.
+check "unknown command is usage" 2 "$SB" definitely-not-a-command
+check "bare run is usage"       2 "$SB" run
+check "run missing name usage"  2 "$SB" run client
 check "run bad mode dies"       2 "$SB" run bogus xyz
+# A near miss is answered with the command meant, so the refusal says what to
+# type rather than only what was wrong.
+near="$("$SB" stpo 2>&1 || true)"
+case "$near" in
+  *"sb stop"*) ;;
+  *) echo "FAIL: 'sb stpo' does not suggest 'sb stop': $near" >&2; fail=1 ;;
+esac
 help_out="$("$SB" help)"
 for needle in "run client" "run server" "run both" "fetch-base" "create-server"; do
   if ! grep -qF "$needle" <<<"$help_out"; then
@@ -45,12 +56,50 @@ for needle in "run client" "run server" "run both" "fetch-base" "create-server";
   fi
 done
 
+# --- per-command help ------------------------------------------------------
+
+# Every verb carries a page, reachable both ways, and each names its own flags
+# rather than only restating the verb: a caller reading `sb up --help` has to
+# learn that --timeout exists without running the command.
+for c in run create create-server up stage render-config launch launch-server \
+         wipe destroy stop list status logs env fetch-base fetch-server-base \
+         doctor init version help; do
+  for page in "$("$SB" "$c" --help 2>/dev/null)" "$("$SB" help "$c" 2>/dev/null)"; do
+    if [[ "$page" != Usage:* ]]; then
+      echo "FAIL: no usage page for 'sb $c --help'" >&2
+      fail=1
+    fi
+  done
+done
+for pair in "up:--timeout" "create:--res" "create-server:--admin" "logs:--follow"; do
+  c="${pair%%:*}"; flag="${pair#*:}"
+  if ! grep -qF -- "$flag" <<<"$("$SB" "$c" --help)"; then
+    echo "FAIL: 'sb $c --help' does not document $flag" >&2
+    fail=1
+  fi
+done
+# The page is on stdout, and the run it documents was not started.
+check "up --help starts nothing" 0 "$SB" up --help
+# Help wins over a bad flag, so a caller who lost the syntax does not have to
+# know which verbs parse options at all.
+check "create --help over bad flag" 0 "$SB" create --help
+# Asking for help about a verb that does not exist is still a wrong command
+# line: a help request must not launder it into exit 0.
+check "help for unknown verb"    2 "$SB" help frobnicate
+check "--help for unknown verb"  2 "$SB" frobnicate --help
+# Every verb that takes arguments says so with 2 rather than 1, so "you called
+# me wrong" and "the run failed" never share an exit code.
+for c in run create create-server up stage render-config destroy wipe stop \
+         status launch launch-server logs env; do
+  check "bare '$c' is a usage error" 2 "$SB" "$c"
+done
+
 # --- name validation -------------------------------------------------------
 
-check "name with slash refused"  1 "$SB" create "../escape"
-check "leading dash refused"     1 "$SB" create -danger
-check "empty name refused"       1 "$SB" create ""
-check "dotfile name refused"     1 "$SB" status ".hidden"
+check "name with slash refused"  2 "$SB" create "../escape"
+check "leading dash refused"     2 "$SB" create -danger
+check "empty name refused"       2 "$SB" create ""
+check "dotfile name refused"     2 "$SB" status ".hidden"
 check "plain name passes val"    2 "$SB" status "plain-name" # dies on missing instance, not name
 
 # --- temp sandbox: create/list/status/env/stop -----------------------------

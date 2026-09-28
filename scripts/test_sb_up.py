@@ -214,9 +214,14 @@ def test_up_returns_and_orphans_the_server(tmp: Path) -> None:
         elapsed = time.monotonic() - started
         assert proc.returncode == 0, f"sb up failed: {proc.stderr or proc.stdout}"
         assert elapsed < UP_CALL_TIMEOUT_SEC, f"sb up took {elapsed:.0f}s"
-        assert f"port {port}" in proc.stdout, proc.stdout
+        # The progress line is a diagnostic, so it is on stderr: stdout is the
+        # contract and nothing else, which is what makes `eval "$(sb up ...)"
+        # # work. A status line on stdout broke the documented caller.
+        assert f"port {port}" in proc.stderr, proc.stderr
         # It printed the contract, so a caller can read the instance back.
         assert "SERVER_PORT=" in proc.stdout, proc.stdout
+        for line in proc.stdout.splitlines():
+            assert line.startswith("export "), f"sb up wrote non-contract data to stdout: {line!r}"
 
         pids = server_pids(inst)
         assert pids, "sb up returned but left no server running"
