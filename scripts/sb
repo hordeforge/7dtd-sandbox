@@ -46,6 +46,87 @@ PORT_BLOCK_SIZE=5
 PORT_BLOCK_LAST_OFFSET=$(( PORT_BLOCK_SIZE - 1 ))
 PORT_MAX=65535
 
+# --- what this run owns until it publishes it ------------------------------
+#
+# A staging tree a copy is being written into, a tree moved aside to be
+# replaced, a temp declaration file, the directory a create is half-building.
+# Each one is settled on every exit path, the ones a signal takes included: a
+# `cp -a` of a 17 GB base interrupted at the keyboard otherwise leaves the
+# staging tree, and the partial instance directory, inside instances/, and a
+# lab that brings instances up and wipes them hundreds of times accumulates one
+# of each per interrupted run. Nothing sweeps them, and a partial instance
+# refuses every retry with "already exists".
+#
+# A SIGKILL leaves debris no handler can remove, so every name carries the pid
+# that owns it: what is left is attributable to a run, not anonymous.
+SB_PENDING=()
+SB_RESTORE_SRC=()
+SB_RESTORE_DST=()
+
+sb_own_pending() { # sb_own_pending <path>: dropped when this run ends
+  SB_PENDING+=("$1")
+}
+
+# A path that stops being garbage the moment this run ends, and what it has
+# become: the tree publish_tree moved aside, which is the only copy of an
+# instance's game until the replacement is renamed into place. Deleting it
+# would be the failure the staged rename exists to prevent, so it goes back
+# where it came from instead.
+sb_own_restore() { # sb_own_restore <moved-aside> <where it belongs>
+  SB_RESTORE_SRC+=("$1")
+  SB_RESTORE_DST+=("$2")
+}
+
+# A path this run has published, or has decided never to own: an instance
+# directory a finished create now lives in.
+sb_release_pending() { # sb_release_pending <path>
+  local p keep=() i
+  for p in ${SB_PENDING[@]+"${SB_PENDING[@]}"}; do
+    [[ "$p" == "$1" ]] || keep+=("$p")
+  done
+  SB_PENDING=(${keep[@]+"${keep[@]}"})
+  for i in "${!SB_RESTORE_SRC[@]}"; do
+    if [[ "${SB_RESTORE_DST[i]}" == "$1" ]]; then
+      SB_RESTORE_SRC[i]=""
+      SB_RESTORE_DST[i]=""
+    fi
+  done
+}
+
+# Settle both lists. A staged path that has already been renamed away is not
+# there any more and `rm -rf` on a path that is not there is a no-op, so a
+# published staging tree needs no release call to be safe here; only a path
+# that has become a live tree does.
+sb_settle_pending() {
+  local i src dst p
+  for i in "${!SB_RESTORE_SRC[@]}"; do
+    src="${SB_RESTORE_SRC[i]}"
+    dst="${SB_RESTORE_DST[i]}"
+    [[ -n "$src" ]] || continue
+    # A destination that is back means the replacement was published after all,
+    # so the moved-aside tree is debris and is dropped below.
+    if [[ -e "$src" && ! -e "$dst" ]]; then
+      mv "$src" "$dst" 2>/dev/null \
+        || warn "interrupted with $dst missing; the original tree is at $src"
+    fi
+  done
+  for p in ${SB_PENDING[@]+"${SB_PENDING[@]}"}; do
+    if [[ -e "$p" ]]; then rm -rf -- "$p"; fi
+  done
+  SB_PENDING=()
+  SB_RESTORE_SRC=()
+  SB_RESTORE_DST=()
+}
+
+# Settle, then let the signal take its normal course so the exit status is the
+# one a caller waiting on this pid expects. The traps go with it: the lists are
+# empty by now, and the signal must not be handled twice.
+sb_on_signal() {
+  sb_settle_pending
+  trap - EXIT INT TERM HUP
+  kill -s "$1" "$$"
+}
+
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for a refused flag, a bad declaration, a missing instance, and the
 # "missing argument" guards of up, stage, render-config and create-server. The
@@ -295,6 +376,7 @@ ensure_instance() { # ensure_instance <name> <create-command> <name>
 copy_tree() {
   local src="$1" dst="$2" what="$3"
   local staging="$dst.incoming.$$" err
+  sb_own_pending "$staging"
   rm -rf "$staging"
   if err="$(cp -a --reflink=always "$src" "$staging" 2>&1)"; then
     publish_tree "$staging" "$dst"
@@ -321,8 +403,14 @@ publish_tree() {
   local old="$dst.replaced.$$"
   if [[ -e "$dst" ]]; then
     mv "$dst" "$old" || die "could not move $dst aside to replace it"
+    # From here to the rename below, $old is the only copy of the tree, so an
+    # interrupt puts it back rather than dropping it.
+    sb_own_restore "$old" "$dst"
   fi
   if mv "$staging" "$dst"; then
+    # Published: the tree that was moved aside is now debris, and the handler
+    # sees a destination that is already back, so it drops it.
+    sb_own_pending "$old"
     rm -rf "$old"
     return 0
   fi
@@ -658,6 +746,10 @@ cmd_create_server() {
     admins="${admins:+$admins,}$extra"
   done
   mkdir -p "$inst"
+  # Owned until the body below succeeds, so an interrupt during the copy takes
+  # the partial tree with it; the rollback below covers the paths that fail on
+  # their own.
+  sb_own_pending "$inst"
   # Everything past this point works on a directory nothing else has claimed
   # yet. A failure anywhere in it (a copy that ran out of space, a seeding
   # error) would otherwise leave an instance dir that refuses every retry with
@@ -668,8 +760,10 @@ cmd_create_server() {
     create_server_body "$inst" "$name" "$admins"
   ); then
     rm -rf "$inst"
+    sb_release_pending "$inst"
     die "server instance '$name' was not created; the partial tree at $inst is removed"
   fi
+  sb_release_pending "$inst"
   # Read back through the same validation the bring-up runs, so the range this
   # reports is the range the server will be given, and the block's last port
   # comes from the one constant rather than a literal offset.
@@ -894,9 +988,10 @@ record_server_props() {
   # validate_prop above: one declaration is one line.
   #
   # One rewrite for the whole call, into a per-pid temp that is removed on
-  # every failure path: the per-key rewrite left an instance.props.tmp behind
-  # when it died mid-loop, and every concurrent call wrote the same temp name,
-  # so two harnesses declaring at once published a blend of both.
+  # every failure path, an interrupt included: the per-key rewrite left an
+  # instance.props.tmp behind when it died mid-loop, and every concurrent call
+  # wrote the same temp name, so two harnesses declaring at once published a
+  # blend of both.
   touch "$props"
   local -a drops=() kept=()
   local drop line tmp
@@ -910,6 +1005,7 @@ record_server_props() {
   done < "$props"
   kept+=("$@")
   tmp="$props.tmp.$$"
+  sb_own_pending "$tmp"
   if ! printf '%s\n' "${kept[@]}" > "$tmp"; then
     rm -f "$tmp"
     die "could not write $tmp"
@@ -1024,6 +1120,9 @@ cmd_create() {
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   PROTON="$(detect_proton)"
   mkdir -p "$inst"
+  # Owned until the body below succeeds, so an interrupt during the copy takes
+  # the partial tree with it.
+  sb_own_pending "$inst"
   # Rolled back on failure for the same reason as create_server: a half-built
   # instance dir refuses every retry with "already exists".
   if ! (
@@ -1031,8 +1130,10 @@ cmd_create() {
     create_client_body "$inst" "$name" "$res" "$fullscreen"
   ); then
     rm -rf "$inst"
+    sb_release_pending "$inst"
     die "instance '$name' was not created; the partial tree at $inst is removed"
   fi
+  sb_release_pending "$inst"
   echo "created instance '$name' at $inst"
 }
 
@@ -1750,5 +1851,14 @@ main() {
     *) die "unknown command '$cmd' (see 'sb help')" ;;
   esac
 }
+
+# Installed once, at the top level: bash resets a trapped signal to its
+# original disposition inside a subshell, so the rollback `create` and
+# `create-server` do in one is unaffected, and `exec`ing the game never reaches
+# a handler.
+trap sb_settle_pending EXIT
+trap 'sb_on_signal INT' INT
+trap 'sb_on_signal TERM' TERM
+trap 'sb_on_signal HUP' HUP
 
 main "$@"

@@ -114,6 +114,107 @@ check "no staging debris in Mods" \
 
 chmod 644 "$TMP/src/GoodMod/broken.dat"
 
+# --- an interrupted copy leaves no debris ---------------------------------
+#
+# Every failure path above ends on its own and is cleaned up by the function
+# that owns the temp. A Ctrl-C did not: the staging tree, and during a create
+# the whole partial instance directory, stayed in instances/ with the pid of a
+# run nobody has any record of, one per interrupted run. A lab that wipes and
+# re-creates instances all day fills its own disk that way, and a partial
+# instance refuses every retry with "already exists".
+#
+# The signal goes to a process group, not to `sb` alone, because that is what
+# a terminal sends: `cp` has to die too, or it keeps writing into a tree the
+# handler is deleting. It is TERM rather than INT because a shell started in
+# the background inherits SIGINT ignored and cannot trap it, so an INT here
+# would be swallowed and the case would prove nothing.
+# interrupt_group <start> <path-that-appears-while-it-runs>
+# Returns 0 when the run was caught mid-copy, 1 when it finished first.
+interrupt_group() {
+  local start="$1" appear="$2" pid pgid i
+  setsid bash -c "$start" >/dev/null 2>&1 &
+  pid=$!
+  # The group id from /proc rather than `ps -o pgid=`: no fork, and the field
+  # is the third one after the comm field.
+  for ((i = 0; i < 200; i++)); do
+    if [[ -r "/proc/$pid/stat" ]]; then
+      pgid="$(sed 's/^.*) //' "/proc/$pid/stat" | awk '{print $3}')"
+      [[ -n "$pgid" ]] && break
+    fi
+    sleep 0.01
+  done
+  for ((i = 0; i < 200; i++)); do
+    if compgen -G "$appear" >/dev/null; then
+      local own
+      own="$(sed 's/^.*) //' "/proc/$$/stat" | awk '{print $3}')"
+      # Never signal this gate's own group: if the child somehow shares it,
+      # the case is reported as not reached rather than killing the run.
+      if [[ -z "$pgid" || "$pgid" == "$own" ]]; then
+        break
+      fi
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.01
+  done
+  wait "$pid" 2>/dev/null || true
+  return 1
+}
+
+# A base big enough that the copy is still running a few hundred milliseconds
+# in, which is what makes the interrupt land inside it.
+SLOW_BASE="$TMP/slow-base"
+mkdir -p "$SLOW_BASE"
+touch "$SLOW_BASE/7DaysToDieServer.x86_64"
+for ((i = 0; i < 4000; i++)); do : > "$SLOW_BASE/f$i"; done
+echo "the tree the wipe below has to survive" > "$INST/game/marker-old"
+
+if interrupt_group "env SANDBOX_HOME='$TMP' SANDBOX_INSTANCES='$TMP/instances' \
+    SANDBOX_SERVER_BASE_GAME='$SLOW_BASE' '$SB' wipe srv-demo" \
+   "$INST/game.incoming.*"; then
+  check "an interrupted wipe left no staging debris" \
+    test -z "$(find "$INST" -maxdepth 1 -name 'game.incoming.*' -print -quit)"
+  check "an interrupted wipe left no replaced-tree debris" \
+    test -z "$(find "$INST" -maxdepth 1 -name 'game.replaced.*' -print -quit)"
+  # The tree the wipe was replacing is still the instance's own: the one it
+  # was copied from is the slow base, which carries no marker.
+  check "an interrupted wipe kept the instance's own game tree" \
+    test -f "$INST/game/marker-old"
+else
+  echo "NOTE: the copy finished before the interrupt landed; the wipe path is untested here"
+fi
+
+if interrupt_group "env SANDBOX_HOME='$TMP' SANDBOX_INSTANCES='$TMP/instances' \
+    SANDBOX_SERVER_BASE_GAME='$SLOW_BASE' '$SB' create-server srv-slow" \
+   "$TMP/instances/srv-slow"; then
+  check "an interrupted create left no partial instance directory" \
+    test ! -e "$TMP/instances/srv-slow"
+  check "an interrupted create left no staging debris" \
+    test -z "$(find "$TMP/instances" -maxdepth 1 -name 'game.incoming.*' -print -quit)"
+else
+  echo "NOTE: the copy finished before the interrupt landed; the create path is untested here"
+fi
+# The interrupted create may have left the instance behind if the run finished
+# first, and a later case wants a clean name either way.
+rm -rf "$TMP/instances/srv-slow"
+
+# --- the tree moved aside comes back ---------------------------------------
+#
+# publish_tree's window between the two renames is microseconds wide, so the
+# case is driven through the handler directly: that window is the one place
+# where cleaning up an interrupted run wrongly would delete the only copy of an
+# instance's game tree.
+check "an interrupted publish puts the moved-aside tree back" \
+  bash -c "set --; . '$SB' >/dev/null 2>&1
+           mkdir -p '$TMP/rt/game'
+           : > '$TMP/rt/game/keepme'
+           sb_own_restore '$TMP/rt/game.replaced.9' '$TMP/rt/game'
+           mv '$TMP/rt/game' '$TMP/rt/game.replaced.9'
+           sb_own_pending '$TMP/rt/game.replaced.9'
+           sb_settle_pending
+           test -f '$TMP/rt/game/keepme' && test ! -e '$TMP/rt/game.replaced.9'"
+
 if [[ "$fail" -ne 0 ]]; then
   echo "test_sb_copy: FAILED" >&2
   exit 1

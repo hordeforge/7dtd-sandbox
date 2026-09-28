@@ -747,6 +747,42 @@ def test_seed_creates_the_admin_file_private(tmp: Path) -> None:
     print("PASS seed_creates_the_admin_file_private")
 
 
+def test_interrupted_write_leaves_no_temp_behind(tmp: Path) -> None:
+    """A write that dies on anything but an OSError takes its temp with it.
+
+    The temp is a dot file in the instance's own tree, named for the pid that
+    wrote it. One per interrupted bring-up is debris nothing in this tree
+    sweeps, and this render runs on every server launch.
+    """
+    src = tmp / "in.xml"
+    src.write_text(STOCK, encoding="utf-8")
+    dst = tmp / "serverconfig.xml"
+    real_write = Path.write_text
+    interrupted = False
+
+    def interrupt(self: Path, *args: object, **kwargs: object) -> int:
+        nonlocal interrupted
+        if self.name.startswith(".serverconfig.xml.tmp."):
+            interrupted = True
+            # The half-written file a real interrupt leaves behind, before the
+            # exception rather than instead of it.
+            real_write(self, "partial")
+            raise KeyboardInterrupt
+        return real_write(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    Path.write_text = interrupt  # type: ignore[method-assign]
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            sbconfig.main(["render", str(src), str(dst), "--set", "ServerPort=27105"])
+    finally:
+        Path.write_text = real_write  # type: ignore[method-assign]
+    assert interrupted, "the render never reached the temp write, so this proved nothing"
+    leftovers = [p.name for p in tmp.iterdir() if ".tmp." in p.name]
+    assert leftovers == [], leftovers
+    assert not dst.exists(), "an interrupted render published a config"
+    print("PASS interrupted_write_leaves_no_temp_behind")
+
+
 TESTS = (
     test_rewrites_active_property,
     test_leaves_commented_property_commented,
@@ -788,6 +824,7 @@ TESTS = (
     test_insert_skips_a_commented_closer,
     test_seed_refuses_a_dtd,
     test_seed_creates_the_admin_file_private,
+    test_interrupted_write_leaves_no_temp_behind,
 )
 
 

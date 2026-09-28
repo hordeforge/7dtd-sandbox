@@ -74,6 +74,17 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- An interrupted run left what it owned in the instance tree. `sb` registers
+  the staging tree a copy is written into, the tree it moves aside to replace
+  one, the `instance.props` temp and the directory a create is half-building,
+  and settles every one of them on each exit path, a signal included: a
+  `Ctrl-C` during a `cp -a` of the base used to leave a full staging tree, or
+  a partial instance directory that refuses every retry with "already exists",
+  per interrupted run, and nothing in the tree ever swept them. The tree moved
+  aside is put back rather than removed, so cleaning up an interrupted publish
+  cannot delete the only copy of an instance's game. `sbconfig.py` takes its
+  temp with it on a `KeyboardInterrupt` as well as on an `OSError`, for the
+  same reason in the same tree.
 - The instance port block was range-checked on its first port alone, so a
   hand-edited `SERVER_PORT=65535` was accepted: telnet landed on 65536 and the
   dedicated's +2..+4 ports on 65537..65539, outside TCP/UDP entirely. The check

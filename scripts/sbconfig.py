@@ -545,6 +545,13 @@ def _atomic_write(path: Path, text: str) -> None:
         # failed seed, and a reader globbing serveradmin.xml* finds the debris.
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"cannot write {path}: {ex}") from ex
+    except BaseException:
+        # A Ctrl-C mid-write raises KeyboardInterrupt, and a SystemExit can land
+        # here too: the same partial file, on a path no OSError arm ever sees.
+        # A harness driving a suite from a terminal is interrupted often enough
+        # for one debris file per run to matter in the instance's Saves tree.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _parse_sets(items: list[str]) -> dict[str, str]:
