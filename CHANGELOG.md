@@ -212,6 +212,18 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Changed
 
+- The process scan behind `sb list`, `sb status`, `sb stop`, `sb wipe` and
+  `sb destroy` reads every `/proc/<pid>/environ` in one `grep -z` pass instead
+  of a `tr | grep` pair per process, and `sb list` asks for every instance's
+  marker in that one pass rather than rescanning per row. Measured on a host
+  with 1044 processes: 1.59s per instance scan before, 30ms for all of them.
+- `sb render-config` drops every replaced declaration in one pass over
+  `instance.props` rather than one `awk`/append/rename per property, and
+  validates every key before writing anything, so a refused key no longer
+  leaves the earlier ones applied.
+- Reading a declared value out of `instance.env` uses the shell's own read
+  loop rather than a `sed | head` pair per lookup, and `sb env` quotes each
+  value into a variable rather than through a command substitution per line.
 - CI installs a version-pinned ruff through `astral-sh/setup-uv` (pinned to a
   commit, like the checkout above it) and then runs the same `make check test`
   contributors run. Both analyzers are now required in CI: `make check` fails

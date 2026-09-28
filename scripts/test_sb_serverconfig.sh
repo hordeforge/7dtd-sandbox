@@ -133,6 +133,20 @@ for owned in ServerPort TelnetPort UserDataFolder; do
   expect_eq "$owned refused as a declaration" "$rc" "2"
 done
 
+# --- a glob-shaped property name is refused, and costs nothing --------------
+
+# `.*` looks like a legal property name to a caller. Matched as a regex it used
+# to drop every other declaration, so one render-config call erased the
+# instance's whole state; the name charset now refuses it outright, and the
+# refusal happens before the declaration file is touched.
+cp "$INST/instance.props" "$INST/props.before-glob"
+rc=0
+sb render-config srv-demo '.*=oops' >/dev/null 2>&1 || rc=$?
+expect_eq "a glob-shaped key is refused" "$rc" "2"
+expect_eq "a refused key changes no declaration" \
+  "$(grep -c '^[A-Za-z]' "$INST/instance.props")" \
+  "$(grep -c '^[A-Za-z]' "$INST/props.before-glob")"
+
 # --- the contract is exported, not merely assigned --------------------------
 
 # AGENTS.md documents `eval "$(sb env <name>)"` as a resolution path. A bare

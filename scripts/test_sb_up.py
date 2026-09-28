@@ -11,7 +11,9 @@ so the contract is exercised without a 17 GB game tree:
   forever with its port check already passed, hanging every caller,
 - a server that never binds fails inside the timeout and names its log,
 - an instance already running is refused, so two harnesses cannot double-bind
-  one instance.
+  one instance,
+- ``sb list`` reports the running instance as running, its idle neighbour as
+  idle, and ``sb stop`` stops exactly that instance.
 
 Part of ``make test``.
 """
@@ -234,10 +236,70 @@ def test_the_wait_deadline_is_monotonic(tmp: Path) -> None:
     print("PASS the_wait_deadline_is_monotonic")
 
 
+def run_sb(root: Path, *args: str):
+    env = dict(os.environ)
+    env["SANDBOX_HOME"] = str(root)
+    env["SANDBOX_INSTANCES"] = str(root / "instances")
+    return subprocess.run(
+        ["bash", str(SB), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=UP_CALL_TIMEOUT_SEC,
+    )
+
+
+def test_list_and_stop_see_the_running_instance(tmp: Path) -> None:
+    """`sb list` and `sb stop` read the same one-pass /proc scan.
+
+    The per-row scan they replaced reported a running server as stopped, and a
+    stopped one as running: the marker match has to survive the whole path from
+    /proc to the printed row, not just the single-instance commands.
+    """
+    port = free_port()
+    running = make_instance(tmp, "srv-listed", port)
+    idle = make_instance(tmp, "srv-idle", free_port())
+    pids: list[int] = []
+    try:
+        proc = run_sb(tmp, "list")
+        assert proc.returncode == 0, proc.stderr
+        assert "srv-listed" in proc.stdout and "srv-idle" in proc.stdout, proc.stdout
+        assert row_for(proc.stdout, "srv-listed").split()[2] == "no", proc.stdout
+
+        assert run_up(tmp, "srv-listed", timeout="30", port=port).returncode == 0
+        pids = server_pids(running)
+        assert pids, "fixture server did not start"
+        proc = run_sb(tmp, "list")
+        assert row_for(proc.stdout, "srv-listed").split()[2] == "yes", proc.stdout
+        # The neighbour is not running, and must not be reported as such.
+        assert row_for(proc.stdout, "srv-idle").split()[2] == "no", proc.stdout
+
+        stopped = run_sb(tmp, "stop", "srv-listed")
+        assert stopped.returncode == 0, stopped.stderr
+        for _ in range(50):
+            if not server_pids(running):
+                break
+            time.sleep(0.2)
+        assert not server_pids(running), "sb stop left the instance's server running"
+    finally:
+        stop(pids)
+    assert idle.is_dir()
+    print("PASS list_and_stop_see_the_running_instance")
+
+
+def row_for(stdout: str, name: str) -> str:
+    for line in stdout.splitlines():
+        if line.startswith(f"{name} "):
+            return line
+    return ""
+
+
 TESTS = (
     test_up_returns_and_orphans_the_server,
     test_up_refuses_an_instance_already_running,
     test_up_fails_inside_its_timeout_and_names_the_log,
+    test_list_and_stop_see_the_running_instance,
     test_the_wait_deadline_is_monotonic,
 )
 

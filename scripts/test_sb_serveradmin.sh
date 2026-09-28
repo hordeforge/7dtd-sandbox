@@ -45,8 +45,7 @@ EOF
 
 # shellcheck disable=SC1090,SC1091 # extract the helpers from sb without running main
 # The interpreter check travels with them: seeding shells out to sbconfig.py.
-source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p' "$SB")
-$(sed -n '/^instance_env_value()/,/^}/p' "$SB")
+source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^env_value()/,/^}/p' "$SB")
 $(sed -n '/^default_server_admins()/,/^}/p' "$SB")
 $(sed -n '/^seed_sandbox_admins()/,/^}/p' "$SB")"
 

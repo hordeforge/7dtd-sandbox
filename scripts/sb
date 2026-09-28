@@ -141,16 +141,35 @@ validate_name() {
 # lines that surround it. Last wins because that is what `sb env` hands the
 # caller: it exports every declaration, so the shell's own last-one-wins
 # settles a hand-edited duplicate before any reader of this file ever sees it.
-instance_env_value() {
+# One sed, no second process to trim its output: the bring-up paths look up a
+# dozen keys each.
+env_value() {
   sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1
+}
+
+# An instance-owned key the bring-up cannot proceed without.
+require_env_value() {
+  local inst="$1" key="$2" value
+  value="$(env_value "$inst" "$key")"
+  [[ -n "$value" ]] || die "no $key in $inst/instance.env (recreate the instance)"
+  echo "$value"
+}
+
+# A serverconfig property name. It is a regex in the upsert that rewrites an
+# existing property and a line prefix in instance.props, so it stays to the
+# characters the stock config uses.
+validate_prop_key() {
+  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || usage_err "invalid property name '$1' (use [A-Za-z][A-Za-z0-9_]*)"
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
 # A quote in a path or a declared value stays inside the string instead of
-# closing it and running whatever followed.
+# closing it and running whatever followed. The result lands in REPLY rather
+# than on stdout: every call site is a printf argument, and reading it back
+# through $(...) would cost a fork per value.
 shquote() {
   local s="${1//\'/\'\\\'\'}"
-  printf "'%s'" "$s"
+  REPLY="'${s}'"
 }
 
 # Steam only ever validates files it owns (inside a steamapps library). The
@@ -162,7 +181,7 @@ assert_not_steam_owned() {
   if [[ -d "$path" ]]; then
     resolved="$(cd "$path" 2>/dev/null && pwd)" || resolved="$path"
   else
-    resolved="$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")" || resolved="$path"
+    resolved="$(cd "$(dirname "$path")" 2>/dev/null && pwd)/${path##*/}" || resolved="$path"
   fi
   case "$resolved" in
     */steamapps|*/steamapps/*)
@@ -242,9 +261,9 @@ ensure_local_platform() {
 # declared name.
 seed_sandbox_admins() {
   local inst="$1" declared name args=()
-  declared="$(instance_env_value "$inst" SERVER_ADMINS)"
+  declared="$(env_value "$inst" SERVER_ADMINS)"
   # An instance created before SERVER_ADMINS existed still gets its pair name.
-  [[ -n "$declared" ]] || declared="$(default_server_admins "$(basename "$inst")")"
+  [[ -n "$declared" ]] || declared="$(default_server_admins "${inst##*/}")"
   local IFS=,
   for name in $declared; do
     [[ -n "$name" ]] && args+=(--name "$name")
@@ -268,40 +287,72 @@ link_prefix_logs() {
   fi
 }
 
-# Pids of processes bound to this instance: clients carry their unique
-# STEAM_COMPAT_DATA_PATH; server instances carry SB_INSTANCE (set at launch).
-# Never matches the steam client or other instances.
-instance_pids() {
-  local marker="$1" value="$2" ef pid
-  for ef in /proc/[0-9]*/environ; do
-    [[ -r "$ef" ]] || continue
-    pid="${ef#/proc/}"; pid="${pid%/environ}"
-    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
-    if { tr '\0' '\n' < "$ef"; } 2>/dev/null | grep -Fqx "$marker=$value"; then
-      echo "$pid"
-    fi
+# Every pid whose environment carries one of the given "MARKER=VALUE" strings,
+# as "<marker>\t<pid>" lines. One grep reads every /proc/<pid>/environ at once:
+# the previous per-process `tr | grep` pair cost two forks per process, so a
+# host with 500 processes paid 1000 of them per `sb list` row.
+# `grep -z` is what makes this possible: /proc/<pid>/environ is NUL-separated,
+# so -z is the only mode in which a whole "K=V" record is a line to match. -o
+# then prints the record with its NUL, and no newline, so one tr restores the
+# line separation the loop reads.
+# Pids whose environ is not readable are skipped by grep, exactly as before.
+pids_for_markers() {
+  (($#)) || return 0
+  # One -e per marker, not a -f pattern file: a process substitution nested
+  # inside the outer one (the read below) is opened too late for grep to see.
+  local -a pats=()
+  local m line path pid marker
+  for m in "$@"; do
+    pats+=(-e "$m")
   done
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    path="${line%%:*}"
+    marker="${line#*:}"
+    pid="${path#/proc/}"
+    pid="${pid%/environ}"
+    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+    printf '%s\t%s\n' "$marker" "$pid"
+  done < <(grep -azH -o -x -F "${pats[@]}" /proc/[0-9]*/environ 2>/dev/null \
+    | tr '\0' '\n' || true)
 }
 
 # Instance kind: 'server' for server instances, 'client' otherwise.
 instance_kind() {
   local inst="$1"
-  if [[ -f "$inst/instance.env" ]] && grep -q '^SERVER_KIND=server' "$inst/instance.env"; then
+  if [[ "$(env_value "$inst" SERVER_KIND)" == server ]]; then
     echo server
   else
     echo client
   fi
 }
 
+# The environment marker that binds a process to this instance. Clients carry
+# their unique STEAM_COMPAT_DATA_PATH; server instances carry SB_INSTANCE (set
+# at launch). One place decides it, so a scan can ask for every instance's
+# marker in a single pass.
+instance_marker() {
+  if [[ "$(instance_kind "$1")" == server ]]; then
+    printf 'SB_INSTANCE=%s\n' "$1"
+  else
+    printf 'STEAM_COMPAT_DATA_PATH=%s/compatdata\n' "$1"
+  fi
+}
+
+# The pids behind one marker, without the marker column: what stop, destroy,
+# wipe and the running-instance guard consume (kill takes a pid, not a
+# "<marker>\t<pid>" line).
+pids_for_marker() {
+  local marker pid
+  while IFS=$'\t' read -r marker pid || [[ -n "$marker" ]]; do
+    if [[ -n "$pid" ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done < <(pids_for_markers "$1")
+}
+
 # Running pids for an instance of either kind.
 instance_procs() {
-  local inst="$1" kind
-  kind="$(instance_kind "$inst")"
-  if [[ "$kind" == server ]]; then
-    instance_pids SB_INSTANCE "$inst"
-  else
-    instance_pids STEAM_COMPAT_DATA_PATH "$inst/compatdata"
-  fi
+  pids_for_marker "$(instance_marker "$1")"
 }
 
 # --- client commands -------------------------------------------------------
@@ -538,7 +589,7 @@ cmd_launch_server() {
   local inst
   inst="$(instance_dir "$name")"
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
-  grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
+  [[ "$(env_value "$inst" SERVER_KIND)" == server ]] || die "'$name' is a client instance; use 'sb launch'"
   local game="$inst/game"
   instance_server_ports "$inst"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
@@ -669,25 +720,31 @@ record_server_props() {
   local inst="$1"; shift
   local props="$inst/instance.props" kv key owned line
   touch "$props"
+  # Every key is validated before anything is written, so a refusal leaves the
+  # declaration exactly as it was.
+  local -a prefixes=()
   for kv in "$@"; do
     validate_prop "$kv"
     key="${kv%%=*}"
     for owned in $INSTANCE_OWNED_PROPS; do
       [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
     done
-    # Upsert by literal prefix, read in the shell rather than through grep:
-    # a key carrying `.`, `*` or `[` used to match (and drop) every other
-    # declaration, losing the instance's whole declared state to one
-    # `sb render-config` call. A newline in the value is refused by
-    # validate_prop above: one declaration is one line.
-    : > "$props.tmp"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ "$line" == "$key="* ]] || printf '%s\n' "$line" >> "$props.tmp"
-    done < "$props"
-    printf '%s\n' "$kv" >> "$props.tmp"
-    mv "$props.tmp" "$props"
+    prefixes+=("$key=")
   done
-  sort -o "$props" "$props"
+  # One pass over the file drops every replaced declaration, one append adds
+  # the new ones, one sort restores the order. Per key that was three
+  # processes and three rewrites of the whole file.
+  #
+  # A literal prefix match, not a regex: a key carrying `.` or `*` used to
+  # match (and drop) every other declaration, losing the instance's whole
+  # declared state to one `sb render-config` call.
+  SB_DROP_PREFIXES="$(IFS=$'\n'; printf '%s' "${prefixes[*]}")" \
+    awk 'BEGIN { n = split(ENVIRON["SB_DROP_PREFIXES"], p, "\n") }
+         { for (i = 1; i <= n; i++) if (p[i] != "" && index($0, p[i]) == 1) next
+           print }' "$props" > "$props.tmp"
+  if (($#)); then printf '%s\n' "$@" >> "$props.tmp"; fi
+  sort -o "$props.tmp" "$props.tmp"
+  mv "$props.tmp" "$props"
 }
 
 # --- commands --------------------------------------------------------------
@@ -737,7 +794,7 @@ cmd_doctor() {
     local extra=() entry name
     for entry in "$b/Mods"/*; do
       [[ -e "$entry" ]] || continue
-      name="$(basename "$entry")"
+      name="${entry##*/}"
       is_stock_mod "$name" || extra+=("$name")
     done
     if (( ${#extra[@]} )); then
@@ -872,7 +929,7 @@ cmd_wipe() {
   local pids
   pids="$(instance_procs "$inst")"
   if [[ -n "$pids" ]]; then
-    die "instance '$name' is running (pids: $(echo "$pids" | tr '\n' ' ')); stop it first ('sb stop $name')"
+    die "instance '$name' is running (pids: ${pids//$'\n'/ }); stop it first ('sb stop $name')"
   fi
   if [[ "$kind" == server ]]; then
     [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
@@ -902,22 +959,38 @@ cmd_wipe() {
 }
 
 instance_running() {
-  local inst="$1"
-  local pids
-  pids="$(instance_procs "$inst")"
-  [[ -n "$pids" ]] && echo "yes ($(echo "$pids" | wc -w) procs)" || echo "no"
+  local inst="$1" count=0 pid
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then count=$(( count + 1 )); fi
+  done < <(pids_for_marker "$(instance_marker "$inst")")
+  (( count )) && echo "yes ($count procs)" || echo "no"
 }
 
 cmd_list() {
   [[ -d "$INSTANCES_DIR" ]] || { echo "(no instances; run 'sb create <name>')"; return 0; }
-  local d name running kind
+  # One /proc pass for every instance, not one per row: the running state of
+  # each instance is one more marker for the same scan.
+  local d name kind marker pid i count running
+  local -a dirs=() names=() kinds=() markers=()
   for d in "$INSTANCES_DIR"/*/; do
     [[ -d "$d" ]] || continue
     d="${d%/}"
-    name="$(basename "$d")"
+    dirs+=("$d")
+    names+=("${d##*/}")
     kind="$(instance_kind "$d")"
-    running="$(instance_running "$d")"
-    printf '%-20s %-8s %-16s %s\n' "$name" "$kind" "$running" "$d"
+    kinds+=("$kind")
+    marker="$(instance_marker "$d")"
+    markers+=("$marker")
+  done
+  ((${#dirs[@]})) || { echo "(no instances; run 'sb create <name>')"; return 0; }
+  declare -A counts=()
+  while IFS=$'\t' read -r marker pid; do
+    counts["$marker"]=$(( ${counts["$marker"]:-0} + 1 ))
+  done < <(pids_for_markers "${markers[@]}")
+  for i in "${!dirs[@]}"; do
+    count="${counts[${markers[i]}]:-0}"
+    if (( count )); then running="yes ($count procs)"; else running="no"; fi
+    printf '%-20s %-8s %-16s %s\n' "${names[i]}" "${kinds[i]}" "$running" "${dirs[i]}"
   done
 }
 
@@ -942,44 +1015,35 @@ cmd_status() {
   cat "$inst/instance.env" 2>/dev/null || true
 }
 
-# Single-quote for eval: an unquoted path with a space or a glob would re-split
-# when a caller runs the documented `eval "$(sb env <name>)"`.
-shell_quote() {
-  local s="$1"
-  printf "'%s'" "${s//\'/\'\\\'\'}"
-}
-
-# Every line of the contract, for both instance kinds. A bare `KEY=value` line
-# defines a shell variable but does not export it, so a server contract read
-# this way was invisible to every child process a sibling harness spawned.
-emit_env() {
-  local kv key value
-  for kv in "$@"; do
-    key="${kv%%=*}"
-    value="${kv#*=}"
-    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      printf 'export %s=%s\n' "$key" "$(shell_quote "$value")"
-    else
-      printf 'export %s=%s\n' "$(shell_quote "$key")" "$(shell_quote "$value")"
-    fi
-  done
+# One `export K=V` line on stdout, both halves quoted: the documented consumer
+# is `eval "$(sb env <name>)"`, so a path or a declared value carrying a quote
+# or a command substitution would otherwise run in the caller's shell.
+emit_export() {
+  local key="$1" value="$2" kq vq
+  shquote "$key"; kq="$REPLY"
+  shquote "$value"; vq="$REPLY"
+  if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    printf 'export %s=%s\n' "$key" "$vq"
+  else
+    printf 'export %s=%s\n' "$kq" "$vq"
+  fi
 }
 
 cmd_env() {
   local name="$1" inst kind
   inst="$(instance_dir "$name")"
   kind="$(instance_kind "$inst")"
-  # Every value below is emitted as a quoted shell assignment, never echoed
-  # raw: the documented consumer is `eval "$(sb env <name>)"`, so a line
-  # carrying a quote or a command substitution would run in the caller's shell.
   if [[ "$kind" == server ]]; then
+    # A bare `KEY=value` line defines a shell variable but does not export it,
+    # so a server contract read this way was invisible to every child process a
+    # sibling harness spawned.
     local key value line
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ -z "$line" || "$line" == \#* ]] && continue
       [[ "$line" == *=* ]] || continue
       key="${line%%=*}"; value="${line#*=}"
       [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-      printf 'export %s=%s\n' "$key" "$(shquote "$value")"
+      emit_export "$key" "$value"
     done < "$inst/instance.env"
     return 0
   fi
@@ -991,17 +1055,17 @@ cmd_env() {
   read -r res fullscreen < <(declared_window "$inst")
   validate_window "$res" "$fullscreen"
   win_args="$(screen_args "$res" "$fullscreen")"
-  printf 'export SANDBOX_NAME=%s\n' "$(shquote "$name")"
-  printf 'export INSTANCE_DIR=%s\n' "$(shquote "$inst")"
-  printf 'export GAME=%s\n' "$(shquote "$inst/game")"
-  printf 'export COMPAT=%s\n' "$(shquote "$inst/compatdata")"
-  printf 'export PROTON=%s\n' "$(shquote "$PROTON")"
-  printf 'export STEAM_ROOT=%s\n' "$(shquote "$STEAM_ROOT")"
-  printf 'export STEAM_APPID=%s\n' "$(shquote "$STEAM_APPID")"
-  printf 'export LOGFILE=%s\n' "$(shquote "$inst/logs/output_log_client.txt")"
-  printf 'export SB_RES=%s\n' "$(shquote "$res")"
-  printf 'export SB_FULLSCREEN=%s\n' "$(shquote "$fullscreen")"
-  printf 'export SB_SCREEN_ARGS=%s\n' "$(shquote "$win_args")"
+  emit_export SANDBOX_NAME "$name"
+  emit_export INSTANCE_DIR "$inst"
+  emit_export GAME "$inst/game"
+  emit_export COMPAT "$inst/compatdata"
+  emit_export PROTON "$PROTON"
+  emit_export STEAM_ROOT "$STEAM_ROOT"
+  emit_export STEAM_APPID "$STEAM_APPID"
+  emit_export LOGFILE "$inst/logs/output_log_client.txt"
+  emit_export SB_RES "$res"
+  emit_export SB_FULLSCREEN "$fullscreen"
+  emit_export SB_SCREEN_ARGS "$win_args"
 }
 
 cmd_launch() {
@@ -1128,8 +1192,8 @@ has_screen_arg() {
 # Pure: the caller validates, so a refusal exits `sb` rather than a subshell.
 declared_window() {
   local inst="$1" res fullscreen default_res=1280x720 default_fullscreen=0
-  res="$(instance_env_value "$inst" SB_RES)"
-  fullscreen="$(instance_env_value "$inst" SB_FULLSCREEN)"
+  res="$(env_value "$inst" SB_RES)"
+  fullscreen="$(env_value "$inst" SB_FULLSCREEN)"
   [[ -n "$res" ]] || res="$default_res"
   [[ -n "$fullscreen" ]] || fullscreen="$default_fullscreen"
   echo "$res $fullscreen"
@@ -1181,7 +1245,7 @@ prune_instance_mods() {
   [[ -d "$mods" ]] || return 0
   for entry in "$mods"/*; do
     [[ -e "$entry" ]] || continue
-    base="$(basename "$entry")"
+    base="${entry##*/}"
     is_stock_mod "$base" && continue
     rm -rf "$entry"
     removed+=("$base")
@@ -1202,7 +1266,7 @@ stage_mods() {
   for src in "$@"; do
     [[ -d "$src" ]] || die "mod source is not a directory: $src"
     [[ -f "$src/ModInfo.xml" ]] || die "not a modlet (no ModInfo.xml): $src"
-    base="$(basename "$src")"
+    base="${src##*/}"
     rm -rf "$inst/game/Mods/$base"
     cp -a "$src" "$inst/game/Mods/$base"
     echo "staged $base into $inst/game/Mods"
@@ -1299,10 +1363,10 @@ cmd_up() {
   [[ -d "$INSTANCES_DIR/$name" ]] || cmd_create_server "$name" >/dev/null
   local inst="$INSTANCES_DIR/$name"
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
-  grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
+  [[ "$(env_value "$inst" SERVER_KIND)" == server ]] || die "'$name' is a client instance; use 'sb launch'"
   local pids
   pids="$(instance_procs "$inst")"
-  [[ -n "$pids" ]] && die "instance '$name' is already running (pids: $(echo "$pids" | tr '\n' ' '))"
+  [[ -n "$pids" ]] && die "instance '$name' is already running (pids: ${pids//$'\n'/ })"
   instance_server_ports "$inst"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
   start_server_detached "$inst" "$name" "$port" "$telnet_port"
