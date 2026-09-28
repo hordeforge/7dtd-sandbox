@@ -59,6 +59,29 @@ Nothing is deprecated ahead of removal in this repository today.
   the correctness rule groups the tree passes, and `make check` runs
   `ruff check` plus `ruff format --check`; `make format` applies the
   formatting. `python -m compileall` only ever proved the file parsed.
+- The workflow definitions are analyzed too. `yamllint --strict` under
+  `.yamllint.yaml` runs over `.github/workflows/*.yml` in `make check`, pinned
+  as `YAMLLINT_VERSION` and installed by CI from the Makefile like the other
+  two, with a 120-column cap (the longest line in either workflow is 114).
+  A workflow is the one file in the tree GitHub reads, and nothing was reading
+  it back.
+- `ruff.toml` selects more of the analyzer's own groups, all of which the tree
+  already passed: `A` (shadowing a builtin), `ANN` (every parameter and return
+  annotated, so an untyped signature is a red build rather than a convention
+  nobody checks), `ASYNC` (blocking the loop), `BLE` (a blind except), `DTZ` (a
+  naive datetime), `ERA` (commented-out code) and `INP` (an implicit namespace
+  package). `BLE` is the one that bites the shipped renderer, and `sbconfig.py`
+  catches nothing it did not name; the five sites that need it are gate
+  runners reporting a raising case as a finding, which the per-file-ignore
+  says. ANN needed twelve signatures annotated across three gates to get
+  there, none in the shipped renderer.
+- `ruff.toml` targets `py38`, the floor `sbconfig.py` declares and `sb` mirrors,
+  rather than the interpreter a contributor happens to run. At `py312` pyupgrade
+  was free to suggest PEP 695 type parameters the floor cannot parse, and it
+  took the first one as soon as a generic gate helper appeared.
+- `.shellcheckrc` turns on four more optional checks the tree already passes:
+  `check-avoid-nullary-conditions`, `check-redundant-assignment`,
+  `check-dollar-star-at-quote` and `check-single-subshell`.
 - `.shellcheckrc` turns on the optional shellcheck checks that catch defects
   (an unassigned uppercase, a value assigned in one branch, a glob that
   cannot expand, a zero step, `rm -rf "$DIR"/` with `DIR` unset) rather than
@@ -131,9 +154,6 @@ Nothing is deprecated ahead of removal in this repository today.
 - The declared `SERVER_ADMINS` are split with globbing off. A hand-edited
   declaration carrying a `*` expanded to the files in the current directory,
   and every one of them was seeded at level 0.
-- `make check` fails the tree: `scripts/test_sbconfig_fuzz.py` shipped
-  executable with no shebang, so ruff's `EXE002` made every `make check` red on
-  a clean checkout.
 - `instance.props` was published at the caller's umask. A declaration reaches
   `serverconfig.xml`, which is kept 0600 precisely because a rendered config
   can carry `TelnetPassword`, and that password is declared in
@@ -164,6 +184,14 @@ Nothing is deprecated ahead of removal in this repository today.
   hands out ports other sockets are listening on, so the never-binds case ran
   against whatever was squatting on the port and failed or passed at random. A
   port is now handed out only once nothing answers on it.
+- `.ruff_cache/` is ignored and `make clean` removes it. `make check` writes
+  it into the tree it is checking, so a contributor's local run left an
+  untracked directory behind that nothing accounted for.
+- `scripts/test_sbconfig_fuzz.py` shipped executable (mode 100755) with no
+  shebang, which `ruff check` reports as EXE002, so `make check` was red and
+  every push failed CI on a tree nobody had changed. It now carries the same
+  `#!/usr/bin/env python3` as the other Python gates; the `EXE` rule group
+  ruff already ran is what holds the executable bit and the shebang together.
 - `make check` was red on a clean checkout with the ruff CI pins: 45 findings
   across `sbconfig.py` and the two config gates (long lines, percent-format,
   magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a

@@ -55,6 +55,7 @@ repo opens a serverconfig, allocates a port, or execs a dedicated server.
 | `scripts/test_*.sh`, `scripts/test_*.py` | The gates; `make test` discovers them, no list to update |
 | `.shellcheckrc` | The shell analyzer's configuration: optional checks the tree passes, each with the defect it catches |
 | `ruff.toml` | The Python analyzer and formatter's configuration: rule groups, per-file ignores, the 100-column cap |
+| `.yamllint.yaml` | The workflow analyzer's configuration: the 120-column cap the tree passes, and the `truthy` key exception GitHub's `on:` forces |
 | `base/game`, `base/server-game` | Pristine steamcmd bases; never edited in place |
 | `instances/<name>/` | One instance (gitignored) |
 | `tools/steamcmd/` | The Steam console client (gitignored) |
@@ -445,19 +446,20 @@ client hangs during early Unity init (see README); use the native
     (`scripts/test_*.sh` and `scripts/test_*.py`).
 14. **Both languages are analyzed, and the analyzers are pinned.**
     `make check` runs `bash -n`, shellcheck under `.shellcheckrc`, `ruff check`
-    and `ruff format --check` under `ruff.toml`, and `python -m compileall`.
-    Shellcheck and ruff are both required in CI (the check errors out rather
-    than skipping when either is missing there) and both are named
+    and `ruff format --check` under `ruff.toml`, yamllint under
+    `.yamllint.yaml` over `.github/workflows/*.yml`, and `python -m
+    compileall`. All three analyzers are required in CI (the check errors out
+    rather than skipping when one is missing there) and each is named
     explicitly on the command line, so a stray rc file elsewhere on the
-    machine cannot loosen the gate. Both are pinned in the Makefile
-    (`RUFF_VERSION`, `SHELLCHECK_VERSION`, `SHELLCHECK_PY_VERSION`, the
-    version home for both), CI installs those pins by reading them out of the
-    Makefile rather than repeating them, and `check-analyzer-versions` holds
-    the installed analyzer to the pin: a note locally, fatal in CI. Use the
-    pinned one locally, or `make format` is a diff somebody else has to
-    absorb. A rule the tree does not pass is not enabled: an analyzer that
-    fires on every line gets ignored, which is worse than the defect it was
-    meant to catch.
+    machine cannot loosen the gate. All three are pinned in the Makefile
+    (`RUFF_VERSION`, `SHELLCHECK_VERSION`, `SHELLCHECK_PY_VERSION`,
+    `YAMLLINT_VERSION`, the version home for each), CI installs those pins by
+    reading them out of the Makefile rather than repeating them, and
+    `check-analyzer-versions` holds the installed analyzer to the pin: a note
+    locally, fatal in CI. Use the pinned one locally, or `make format` is a
+    diff somebody else has to absorb. A rule the tree does not pass is not
+    enabled: an analyzer that fires on every line gets ignored, which is worse
+    than the defect it was meant to catch.
 
 ## Fetching the bases
 

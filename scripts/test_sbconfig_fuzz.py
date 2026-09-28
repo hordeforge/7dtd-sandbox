@@ -27,7 +27,9 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -47,6 +49,12 @@ CALL_BUDGET_S = 5.0
 MAX_DOC_CHARS = 4000
 MAX_FRAGMENTS = 24
 MAX_RUN_CHARS = 400
+
+# What a case carries besides the document: the property sets a serverconfig
+# check writes, or the admin names a serveradmin check seeds. `run` is generic
+# over it so the two cases keep their own payload type instead of sharing an
+# `object` the checker cannot follow.
+Payload = TypeVar("Payload")
 
 # The generator's shape rolls and probabilities. Named so a document shape
 # read off a finding is a constant in this file, not a literal in a branch.
@@ -208,7 +216,7 @@ def _serveradmin_input(rng: random.Random, names: list[str]) -> str:
     return body if rng.random() < P_MUTATE else _mutate(rng, body)
 
 
-def _shrink(rng: random.Random, failure, reproduce):
+def _shrink(rng: random.Random, failure: str, reproduce: Callable[[str], bool]) -> str:
     """Delta-debug the offending document so the report is a minimal reproducer."""
     doc = failure
     chunk = max(1, len(doc) // 2)
@@ -239,7 +247,7 @@ def _require(condition: bool, detail: str, doc: str) -> None:
         raise Finding(detail, doc)
 
 
-def _timed(doc: str, call, *args, **kwargs):
+def _timed(doc: str, call: Callable[..., object], *args: object, **kwargs: object) -> object:
     start = time.perf_counter()
     result = call(*args, **kwargs)
     elapsed = time.perf_counter() - start
@@ -358,7 +366,13 @@ def check_serveradmin(doc: str, names: list[str], tmp: Path) -> None:
     _require(admin.read_bytes() == out.encode("utf-8"), "an idempotent seed rewrote the file", doc)
 
 
-def run(name: str, build, check, iterations: int, seed: int) -> int:
+def run(
+    name: str,
+    build: Callable[[random.Random], tuple[str, Payload]],
+    check: Callable[[str, Payload, Path], None],
+    iterations: int,
+    seed: int,
+) -> int:
     findings: list[Finding] = []
     for index in range(iterations):
         # S311: seeded from --seed, so the corpus is reproducible rather than
@@ -370,7 +384,7 @@ def run(name: str, build, check, iterations: int, seed: int) -> int:
         # after the loop advanced would otherwise re-check the shrunk document
         # against the next iteration's payload and report a reproducer that
         # does not reproduce.
-        def reproduce(candidate: str, expected: list[str] = payload) -> bool:
+        def reproduce(candidate: str, expected: Payload = payload) -> bool:
             with tempfile.TemporaryDirectory() as td:
                 try:
                     check(candidate, expected, Path(td))

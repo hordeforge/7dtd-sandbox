@@ -1,0 +1,21 @@
+# yamllint configuration for the workflow definitions under .github/workflows.
+#
+# `make check` runs yamllint over every workflow at the version the Makefile
+# pins, and CI runs `make check`, so a finding here is a red build. The Makefile
+# passes --rcfile-style -c explicitly, so a stray config in a caller's home
+# cannot loosen the gate.
+#
+# The cap is the tree's own: the longest line in either workflow is 114, so
+# nothing here is reflowed to satisfy a number chosen for the tool.
+extends: default
+
+rules:
+  line-length:
+    max: 120
+  # GitHub Actions reads the workflow key as `on:`, and YAML 1.1 reads that
+  # bare as the boolean true. Every workflow in the ecosystem carries it, so
+  # the finding is about the spec's two versions disagreeing, not about a
+  # value this tree can change. Keys that are meant to be booleans elsewhere
+  # are still checked, because check-keys stays on.
+  truthy:
+    check-keys: false

@@ -360,7 +360,9 @@ def main() -> int:
     for test in TESTS:
         try:
             test()
-        except AssertionError as ex:
+        # PERF203: each case has to be caught where it ran, or a raising one
+        # abandons every case after it and the report cannot say which.
+        except AssertionError as ex:  # noqa: PERF203
             print(f"FAIL {test.__name__}: {ex}", file=sys.stderr)
             failed += 1
         except Exception as ex:

@@ -4,7 +4,12 @@
 #
 # Bash is covered by shellcheck (.shellcheckrc). Python was previously covered
 # by `python -m compileall`, which only proves the file parses.
-target-version = "py312"
+# The floor the code actually supports, not the interpreter it happens to run
+# on here: `sbconfig.py` refuses anything below MIN_PYTHON = (3, 8), and
+# `scripts/sb` mirrors it. A newer target lets pyupgrade suggest syntax the
+# floor cannot parse (PEP 695 type parameters, say), which is a green build
+# that ships a SyntaxError to every supported host.
+target-version = "py38"
 
 # The tree's own cap: the longest line in scripts/*.py is 96, so nothing here
 # is reformatted to satisfy a number chosen for the tool.
@@ -12,9 +17,11 @@ line-length = 100
 
 [lint]
 # Correctness and maintenance rules, with the analyzer's own groups rather
-# than hand-written equivalents. Style-only and opinionated groups (D, ANN,
-# COM, T20, CPY, N, A, ARG) stay off: they encode preferences this tree does
-# not follow, and a rule that fires on every line gets ignored.
+# than hand-written equivalents. Style-only and opinionated groups (D, COM,
+# T20, CPY, N, ARG, EM) stay off: they encode preferences this tree does not
+# follow, and a rule that fires on every line gets ignored. A and ANN are on
+# because shadowing a builtin and leaving a parameter unannotated are defects
+# rather than preferences, and the tree already annotates every signature.
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -40,6 +47,13 @@ select = [
     "ICN",  # import conventions
     "RSE",  # raise
     "PT",   # pytest style
+    "A",    # shadowing a builtin (id, type, list) is a defect, not a style
+    "ASYNC", # blocking a loop or a def, and an async call with no await
+    "BLE",  # blind except: catches a defect class it was not written for
+    "DTZ",  # a naive datetime that compares wrong across a DST boundary
+    "ERA",  # commented-out code, which rots and reads like live code
+    "INP",  # an implicit namespace package, which breaks the install
+    "ANN",  # an unannotated parameter or return, so a gap is a red build
 ]
 # A message built at the raise site is the point in a two-hundred-line CLI:
 # moving it to a bespoke exception class per case would be noise.
@@ -59,12 +73,19 @@ ignore = [
 # one would only move the number somewhere else. S108 and S311 are not listed
 # here: the two lines that need them carry their own `noqa`, with the reason on
 # the line above, which is where a one-file exception belongs.
+#
+# BLE001 is off here for the same reason it is on everywhere else: a gate that
+# lets an unexpected exception escape abandons every case after it and the
+# reader cannot tell which one never ran. Each of the five sites is a runner
+# reporting a raising case as a finding. The shipped renderer, sbconfig.py,
+# catches nothing it did not name, and that is what the rule is there to keep.
 "scripts/test_*.py" = [
     "S101",
     "S314",
     "S603",
     "S607",
     "T201",
+    "BLE001",
     "PLC",
     "PLR2004",
     "PT",

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -157,11 +158,11 @@ def test_missing_template_names_the_file(tmp: Path) -> None:
 
 
 @contextlib.contextmanager
-def _stdin(text: str):
+def _stdin(text: str) -> Iterator[None]:
     """Swap sys.stdin for a fixed string.
 
     contextlib.redirect_stdin needs 3.10 and the module under test supports
-    3.7, so the swap is done by hand: sbconfig reads sys.stdin at call time.
+    3.8, so the swap is done by hand: sbconfig reads sys.stdin at call time.
     """
     saved = sys.stdin
     sys.stdin = io.StringIO(text)

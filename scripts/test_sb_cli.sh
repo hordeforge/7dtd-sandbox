@@ -478,7 +478,7 @@ grep -qF "not on PATH" <<<"$no_py" \
 # preinstalled one, is a gate whose verdict nobody chose, so the workflow is
 # held to reading the pins here.
 ci_yml="$ROOT/.github/workflows/ci.yml"
-for pin in RUFF_VERSION SHELLCHECK_PY_VERSION SHELLCHECK_VERSION; do
+for pin in RUFF_VERSION SHELLCHECK_PY_VERSION SHELLCHECK_VERSION YAMLLINT_VERSION; do
   grep -qE "^$pin := [0-9]+\.[0-9]+" "$ROOT/Makefile" \
     || { echo "FAIL: the Makefile does not pin $pin" >&2; fail=1; }
   grep -q "s/^$pin := /" "$ci_yml" \
@@ -486,7 +486,7 @@ for pin in RUFF_VERSION SHELLCHECK_PY_VERSION SHELLCHECK_VERSION; do
 done
 # No version literal of its own: a bump that edits only the workflow passes
 # this gate and puts the two back out of step.
-if grep -nE '(ruff|shellcheck-py)==[0-9]' "$ci_yml"; then
+if grep -nE '(ruff|shellcheck-py|yamllint)==[0-9]' "$ci_yml"; then
   echo "FAIL: ci.yml carries a literal analyzer version rather than the Makefile pin" >&2
   fail=1
 fi

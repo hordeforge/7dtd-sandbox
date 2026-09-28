@@ -18,6 +18,10 @@
 #   check-error-requirement           a command whose failure must abort
 #   check-deprecated-but-severity     a removed check that was load-bearing
 #   check-empty-nullary               `foo ""` where foo takes no argument
+#   check-avoid-nullary-conditions    `-z`/`-n` where empty and unset differ
+#   check-redundant-assignment        a value assigned twice in a row
+#   check-dollar-star-at-quote        a quoted `$*` that would not split
+#   check-single-subshell             a nested $( ) whose value is discarded
 #
 # Deliberately not enabled: check-extra-masked-returns, add-default-case,
 # require-double-brackets and require-variable-braces each fire on the current
@@ -34,3 +38,7 @@ enable=check-divergence-by-zero
 enable=check-error-requirement
 enable=check-deprecated-but-severity
 enable=check-empty-nullary
+enable=check-avoid-nullary-conditions
+enable=check-redundant-assignment
+enable=check-dollar-star-at-quote
+enable=check-single-subshell

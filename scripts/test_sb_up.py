@@ -134,7 +134,9 @@ def derived_block(root: Path, name: str) -> int:
     return int(proc.stdout.strip())
 
 
-def run_up(root: Path, name: str, *, timeout: str, never_binds: bool = False, port: int = 0):
+def run_up(
+    root: Path, name: str, *, timeout: str, never_binds: bool = False, port: int = 0
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["SANDBOX_HOME"] = str(root)
     env["SANDBOX_INSTANCES"] = str(root / "instances")
@@ -337,7 +339,7 @@ def test_the_wait_deadline_is_monotonic(tmp: Path) -> None:
     print("PASS the_wait_deadline_is_monotonic")
 
 
-def run_sb(root: Path, *args: str):
+def run_sb(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["SANDBOX_HOME"] = str(root)
     env["SANDBOX_INSTANCES"] = str(root / "instances")

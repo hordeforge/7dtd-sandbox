@@ -16,3 +16,6 @@ output_log_live.txt
 
 # python bytecode from scripts/sbconfig.py and its gate
 __pycache__/
+
+# ruff's cache, written by `make check` into the tree it is checking
+.ruff_cache/
