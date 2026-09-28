@@ -159,7 +159,19 @@ validate_name() {
 # One sed, no second process to trim its output: the bring-up paths look up a
 # dozen keys each.
 env_value() {
-  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1
+  unquote_value "$(sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1)"
+}
+
+# The inverse of shquote: the value a sourcing shell would assign to a line
+# env_line wrote. An unquoted hand-edit passes through as written, and an
+# unbalanced quote is left alone rather than silently truncated.
+unquote_value() {
+  local s="$1"
+  if [[ "$s" == \'*\' ]]; then
+    s="${s:1:${#s}-2}"
+    s="${s//\'\\\'\'/\'}"
+  fi
+  printf '%s' "$s"
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
@@ -170,6 +182,17 @@ env_value() {
 shquote() {
   local s="${1//\'/\'\\\'\'}"
   REPLY="'${s}'"
+}
+
+# One `KEY=value` line for instance.env, value quoted through shquote. The
+# file is documented as source-able and `sb env` reads it back, so a value
+# written bare is a value a sourcing shell re-splits: `PROTON=/…/Proton -
+# Experimental/proton` assigns the prefix and then runs `-` as a command, and
+# a value carrying a newline writes a second line the sourcing shell executes.
+# Readers take the quotes back off through env_value.
+env_line() { # env_line <KEY> <VALUE>
+  shquote "$2"
+  printf '%s=%s\n' "$1" "$REPLY"
 }
 
 # Steam only ever validates files it owns (inside a steamapps library). The
@@ -350,6 +373,10 @@ seed_sandbox_admins() {
   restrict_instance_env "$inst"
   {
     local IFS=,
+    # set -f: the split words are player names, not patterns. A hand-edited
+    # SERVER_ADMINS carrying a `*` would otherwise expand to the files in the
+    # current directory and seed whatever it found there at level 0.
+    set -f
     for name in $declared; do
       if [[ -n "$name" ]]; then printf '%s\n' "$name"; fi
     done
@@ -645,24 +672,26 @@ create_server_body() {
   write_platform "$inst/game/platform.cfg" Steam
   # Written before seeding and rendering: both read their declaration back
   # from this file, so the instance is described in one place.
-  cat > "$inst/instance.env" <<EOF
+  {
+    cat <<EOF
 # 7dtd-client-sandbox server instance contract (source or eval this file).
 # Written by 'sb create-server'; consumed by 'sb launch-server' and siblings.
 # SERVER_PORT is derived from SANDBOX_NAME, so the same name yields the same
 # block on any machine. SERVER_ADMINS lists the Local player names this server
 # admits at permission_level=0; edit it and relaunch to change them.
-SANDBOX_NAME=$name
-INSTANCE_DIR=$inst
-SERVER_GAME=$inst/game
-SERVER_USERDATA=$inst/userdata
-SERVER_PORT=$port
-SERVER_TELNET_PORT=$(( port + 1 ))
-SERVER_CONFIG=$inst/serverconfig.xml
-SERVER_PROPS=$inst/instance.props
-SERVER_LOG=$inst/logs/server.log
-SERVER_ADMINS=$admins
-SERVER_KIND=server
 EOF
+    env_line SANDBOX_NAME "$name"
+    env_line INSTANCE_DIR "$inst"
+    env_line SERVER_GAME "$inst/game"
+    env_line SERVER_USERDATA "$inst/userdata"
+    env_line SERVER_PORT "$port"
+    env_line SERVER_TELNET_PORT "$(( port + 1 ))"
+    env_line SERVER_CONFIG "$inst/serverconfig.xml"
+    env_line SERVER_PROPS "$inst/instance.props"
+    env_line SERVER_LOG "$inst/logs/server.log"
+    env_line SERVER_ADMINS "$admins"
+    env_line SERVER_KIND server
+  } > "$inst/instance.env"
   : > "$inst/instance.props"
   seed_sandbox_admins "$inst"
 }
@@ -977,23 +1006,25 @@ create_client_body() {
   prune_instance_mods "$inst"
   write_platform "$inst/game/platform.cfg" Local
   mkdir -p "$inst/compatdata" "$inst/logs"
-  cat > "$inst/instance.env" <<EOF
+  {
+    cat <<EOF
 # 7dtd-client-sandbox instance contract (source or eval this file).
 # Written by 'sb create'; consumed by 'sb launch' and sibling harnesses.
 # SB_RES / SB_FULLSCREEN are this instance's window, declared here rather than
 # read from the caller's environment, so the same instance opens the same
 # window on any machine. Edit them and relaunch to change it.
-SANDBOX_NAME=$name
-INSTANCE_DIR=$inst
-GAME=$inst/game
-COMPAT=$inst/compatdata
-PROTON=$PROTON
-STEAM_ROOT=$STEAM_ROOT
-STEAM_APPID=$STEAM_APPID
-LOGFILE=$inst/logs/output_log_client.txt
-SB_RES=$res
-SB_FULLSCREEN=$fullscreen
 EOF
+    env_line SANDBOX_NAME "$name"
+    env_line INSTANCE_DIR "$inst"
+    env_line GAME "$inst/game"
+    env_line COMPAT "$inst/compatdata"
+    env_line PROTON "$PROTON"
+    env_line STEAM_ROOT "$STEAM_ROOT"
+    env_line STEAM_APPID "$STEAM_APPID"
+    env_line LOGFILE "$inst/logs/output_log_client.txt"
+    env_line SB_RES "$res"
+    env_line SB_FULLSCREEN "$fullscreen"
+  } > "$inst/instance.env"
   restrict_instance_env "$inst"
   echo "initializing Proton prefix (first run; one-time cost)..."
   if ( cd "$inst/game" \
@@ -1161,7 +1192,10 @@ cmd_env() {
       [[ "$line" == *=* ]] || continue
       key="${line%%=*}"; value="${line#*=}"
       [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-      emit_export "$key" "$value"
+      # env_line wrote the value quoted, so take that one layer off before
+      # quoting it again for the caller: exporting a quoted value would hand
+      # the caller the quotes as part of the string.
+      emit_export "$key" "$(unquote_value "$value")"
     done < "$inst/instance.env"
     return 0
   fi

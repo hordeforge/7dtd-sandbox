@@ -87,9 +87,29 @@ Nothing is deprecated ahead of removal in this repository today.
   does. Teardown is re-run after a failed pass, and the refusal (exit 2,
   "instance not found") also stopped `sb destroy a b` at the first name that
   was gone, leaving the rest of the list standing.
-- `make check` was red on a clean clone (`EXE002`): the fuzz gate is
-  executable but had lost its shebang to a later edit, so the analyzer failed
-  the tree `make test` runs in the same pass.
+- `instance.env` is written with its values quoted (`KEY='value'`), the same
+  shape `sb env` prints. Both documented consumers parse that file with a
+  shell, and a bare value is a value the consumer re-splits: the stock
+  `Proton - Experimental` path assigned the prefix and then ran `-` as a
+  command, so `source instances/<name>/instance.env` failed on the default
+  install, and a path carrying a newline wrote a second line the sourcing shell
+  executed. `env_value` takes the quotes back off, so a hand-edited bare value
+  still reads.
+- `sbconfig.py` refuses a `serveradmin.xml` carrying a DTD rather than parsing
+  it. Expat expands internal general entities while it parses, so a nested
+  entity definition in a hand-editable file cost exponential time in a check
+  every bring-up runs. The file is rebuilt from the template, which carries no
+  DTD.
+- A freshly seeded `serveradmin.xml` is published by a rename from a 0600 temp
+  rather than created at the umask and restricted afterwards. It holds the
+  level-0 admin list from its first byte, and the create-then-chmod published
+  it to every local account for as long as the chmod took.
+- The declared `SERVER_ADMINS` are split with globbing off. A hand-edited
+  declaration carrying a `*` expanded to the files in the current directory,
+  and every one of them was seeded at level 0.
+- `make check` fails the tree: `scripts/test_sbconfig_fuzz.py` shipped
+  executable with no shebang, so ruff's `EXE002` made every `make check` red on
+  a clean checkout.
 - `make check` was red on a clean checkout with the ruff CI pins: 45 findings
   across `sbconfig.py` and the two config gates (long lines, percent-format,
   magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a

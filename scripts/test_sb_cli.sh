@@ -250,7 +250,7 @@ check "create-server refuses a metacharacter admin" 2 \
   && { echo "FAIL: a refused --admin still created the instance" >&2; fail=1; }
 check "create-server accepts a plain admin" 0 \
   env SANDBOX_HOME="$TMP" "$SB" create-server srvplain --admin 'client-ok'
-grep -qx 'SERVER_ADMINS=client-ok' "$TMP/instances/srvplain/instance.env" \
+grep -qx "SERVER_ADMINS='client-ok'" "$TMP/instances/srvplain/instance.env" \
   || { echo "FAIL: a valid --admin did not reach SERVER_ADMINS" >&2; fail=1; }
 
 # --- the window contract every launcher must honour -------------------------
@@ -302,6 +302,32 @@ printf 'SANDBOX_NAME=t5\nSB_RES=huge\nSB_FULLSCREEN=0\n' > "$TMP/instances/t5/in
 bad_launch="$(env SANDBOX_HOME="$TMP" "$SB" launch t5 2>&1 || true)"
 grep -qF "SB_RES must look like" <<<"$bad_launch" \
   || { echo "FAIL: sb launch started on a malformed declared window: $bad_launch" >&2; fail=1; }
+
+# --- instance.env is source-able, whatever the paths hold -------------------
+
+# Both documented consumers parse this file with a shell: `eval "$(sb env
+# <name>)"` and `source instances/<name>/instance.env`. A path written bare
+# is a path re-split by that shell: every stock Proton install lives under
+# "Proton - Experimental", which assigned the prefix and then ran `-` as a
+# command, and a value carrying a newline wrote a second line that shell ran.
+# The values below are what a create writes when the caller's environment is
+# shaped that way; both consumers have to hand back exactly the input.
+HOSTILE_STEAM_ROOT="$TMP/Steam Root/\$(id); touch $TMP/PWNED2"
+mkdir -p "$TMP/base/game" && touch "$TMP/base/game/7DaysToDie.exe"
+check "create with a shaped STEAM_ROOT" 0 env \
+  SANDBOX_HOME="$TMP" STEAM_ROOT="$HOSTILE_STEAM_ROOT" "$SB" create src-safe
+[[ -e "$TMP/PWNED2" ]] \
+  && { echo "FAIL: writing instance.env executed part of a path" >&2; fail=1; }
+# shellcheck disable=SC2016 # the single-quoted script is run by the child bash
+sourced="$(env SANDBOX_HOME="$TMP" STEAM_ROOT="$HOSTILE_STEAM_ROOT" \
+  bash -c 'source "$1/instances/src-safe/instance.env"; printf %s "$STEAM_ROOT"' _ "$TMP")"
+expect_eq "a sourced instance.env keeps a shaped path whole" "$sourced" "$HOSTILE_STEAM_ROOT"
+# shellcheck disable=SC2016 # the single-quoted script is run by the child bash
+evaled="$(env SANDBOX_HOME="$TMP" STEAM_ROOT="$HOSTILE_STEAM_ROOT" \
+  bash -c 'eval "$("$1" env src-safe)"; printf %s "$STEAM_ROOT"' _ "$SB" 2>/dev/null | tail -1)"
+expect_eq "sb env keeps a shaped path whole" "$evaled" "$HOSTILE_STEAM_ROOT"
+[[ -e "$TMP/PWNED2" ]] \
+  && { echo "FAIL: sb env emitted a path the caller's shell executes" >&2; fail=1; }
 
 # --- up / stage / render-config surface ------------------------------------
 

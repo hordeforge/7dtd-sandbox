@@ -428,10 +428,15 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     users_block = "\n".join(_user_line(n) for n in names)
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file():
-        # temp+replace like every other write here, so a name the encoder
-        # refuses cannot leave a truncated serveradmin.xml behind: a plain
-        # write_text that raises mid-way leaves the empty file a reader sees as
-        # an admin list granting nobody.
+        # _atomic_write, not write_text plus a chmod: the created file already
+        # holds the level-0 admin list, and create-then-restrict publishes it
+        # at the umask for as long as the chmod takes. The temp carries 0600
+        # from the start and arrives by rename, so no name is ever readable
+        # that the finished file is not. It is also the temp+replace every
+        # other write here uses, so a name the encoder refuses cannot leave a
+        # truncated serveradmin.xml behind: a plain write_text that raises
+        # mid-way leaves the empty file a reader sees as an admin list granting
+        # nobody.
         _atomic_write(out, ADMIN_TEMPLATE.format(users=users_block))
         return True
 
@@ -463,14 +468,24 @@ def seed_admins(out: Path, names: list[str]) -> bool:
 
 
 def _wellformed(text: str) -> bool:
-    """True when a strict XML parser accepts `text` as a whole document."""
+    """True when a strict XML parser accepts `text` as a whole document.
+
+    A document carrying a DTD is refused without being parsed. The file being
+    checked is hand-editable and the fuzz gate mutates it, and expat expands
+    internal general entities while it parses: a nested entity definition
+    costs exponential time in a file a bring-up reads on every launch, which is
+    a denial of service handed to whoever can write serveradmin.xml. A
+    serveradmin.xml never needs a DTD, so refusing one costs the sandbox
+    nothing and closes the whole class.
+    """
+    if "<!DOCTYPE" in text or "<!ENTITY" in text:
+        return False
     try:
         # S314 is ignored for this file in ruff.toml, with the same reasoning:
         # the input is the depot's serverconfig and, under the fuzz gate, a
         # mutated copy of it, so it is untrusted by definition. defusedxml is
-        # a dependency this repository does not have, and the expansion blowup
-        # it warns about is already bounded: every call runs under the fuzz
-        # gate's per-call time budget, and a doc that overruns it is a finding.
+        # a dependency this repository does not have; the entity expansion it
+        # warns about cannot reach the parser, because a DTD is refused above.
         ET.fromstring(text)
     except (ET.ParseError, ValueError):
         return False

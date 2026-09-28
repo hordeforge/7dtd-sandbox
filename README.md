@@ -196,6 +196,10 @@ was told to run with. Everything else is derived:
   not name is rendered but warned about: the game would ignore it, so a suite
   must not believe it took effect. The port pair is checked at every bring-up
   too, so a hand-edited `instance.env` is refused before a server starts.
+- **`instance.env` is shell source, so its values are quoted** (`KEY='value'`).
+  A Proton path with a space in it stays one word to a harness that sources the
+  file, and a path carrying a newline cannot write a second line into that
+  shell. A hand-edited bare value still reads.
 
 `sb stop` matches processes by that instance's own `SB_INSTANCE`, so a harness
 never needs a `pkill` that would reach another instance's server. `sb wipe`

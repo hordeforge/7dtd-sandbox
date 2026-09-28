@@ -619,6 +619,52 @@ def test_insert_skips_a_commented_closer(tmp: Path) -> None:
     print("PASS insert_skips_a_commented_closer")
 
 
+def test_seed_refuses_a_dtd(tmp: Path) -> None:
+    """A serveradmin.xml carrying a DTD is rebuilt, never expanded.
+
+    Expat expands internal general entities while it parses, so a nested
+    entity definition in a hand-editable file costs exponential time on every
+    bring-up. A rewritten file is a known-good one with no DTD at all.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    _seed(tmp, "client-sg")
+    admin.write_text(
+        '<?xml version="1.0"?>\n'
+        "<!DOCTYPE adminTools [\n"
+        '<!ENTITY a "aaaaaaaaaa">\n'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">\n'
+        '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">\n'
+        "]>\n"
+        "<adminTools><users>\n"
+        '  <user platform="Local" userid="client-sg" name="client-sg" />\n'
+        "  <!-- &c; -->\n"
+        "</users></adminTools>\n",
+        encoding="utf-8",
+    )
+    text = _seed(tmp, "client-sg")
+    assert "<!DOCTYPE" not in text and "<!ENTITY" not in text, text
+    users = {u.get("userid"): u.get("permission_level") for u in ET.fromstring(text).iter("user")}
+    assert users.get("client-sg") == "0", users
+    assert admin.stat().st_mode & 0o077 == 0, oct(admin.stat().st_mode)
+    print("PASS seed_refuses_a_dtd")
+
+
+def test_seed_creates_the_admin_file_private(tmp: Path) -> None:
+    """A freshly seeded admin file is 0600, not the umask's default.
+
+    The file carries the level-0 admin list from its first byte, so it is
+    published by a rename from a 0600 temp rather than created readable and
+    restricted afterwards.
+    """
+    ud = tmp / "userdata"
+    with _stdin("client-sg\n"):
+        assert sbconfig.main(["seed-admins", str(ud)]) == 0
+    admin = ud / "Saves" / "serveradmin.xml"
+    assert admin.stat().st_mode & 0o077 == 0, oct(admin.stat().st_mode)
+    print("PASS seed_creates_the_admin_file_private")
+
+
 TESTS = (
     test_rewrites_active_property,
     test_leaves_commented_property_commented,
@@ -655,6 +701,8 @@ TESTS = (
     test_seed_upserts_paired_user_without_level,
     test_value_xml_cannot_carry_is_refused,
     test_insert_skips_a_commented_closer,
+    test_seed_refuses_a_dtd,
+    test_seed_creates_the_admin_file_private,
 )
 
 

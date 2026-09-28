@@ -206,6 +206,15 @@ Every property below is gated:
    refuses a value that is not valid UTF-8 where it is written, rather than
    recording a declaration the renderer would refuse at every later launch.
 
+7. **`instance.env` is shell source, so its values are quoted.** Both
+   documented consumers parse the file with a shell (`eval "$(sb env <name>)"`
+   and `source instances/<name>/instance.env`), so every value `sb` writes goes
+   through `env_line` and lands as `KEY='value'`. A bare value is a value the
+   consumer re-splits: the stock `Proton - Experimental` path assigned the
+   prefix and then ran `-` as a command, and a path carrying a newline wrote a
+   second line that shell executed. `env_value` takes the quotes back off, so a
+   hand-edited bare value still reads.
+
 `sb wipe` clears `instance.props` with the rest of the state: a wiped instance
 is the base template again, not the last suite's world.
 
@@ -276,7 +285,11 @@ source /path/to/7dtd-sandbox/instances/<name>/instance.env
 
 `sb env` prints `export K='V'` for both instance kinds, so the values reach
 the environment of every process the caller spawns after the `eval`, not just
-the caller's own shell.
+the caller's own shell. `instance.env` is written the same way (`KEY='V'`), so
+`sourcing` it is the same operation: a stock Proton path (`Proton - Experimental`)
+is one word rather than an assignment plus a command named `-`, and a path
+carrying a newline cannot write a second line into the sourcing shell. A
+hand-edited value may be written bare; `sb` reads both spellings.
 
 | Var | Meaning |
 |---|---|
