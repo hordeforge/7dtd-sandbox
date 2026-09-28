@@ -56,8 +56,7 @@ revoke_xhost() {
     xhost_added=0
   fi
 }
-if command -v xhost >/dev/null 2>&1; then
-  xhost +local: >/dev/null 2>&1 || true
+if command -v xhost >/dev/null 2>&1 && xhost +local: >/dev/null 2>&1; then
   xhost_added=1
 fi
 # Trapped, not called once at the bottom: the grant is host-wide, and every
@@ -76,7 +75,8 @@ devices=( --device /dev/dri )
 machine_id_args=()
 [[ -r /etc/machine-id ]] && machine_id_args+=( -v /etc/machine-id:/etc/machine-id:ro )
 # Host render node is world-writable; video is needed for /dev/dri/card*.
-# The image has no `render` group, so do not --group-add it.
+# The image has no `render` group, so the host's is added by gid, which docker
+# resolves on the host side rather than in the container's own /etc/group.
 # Wine refuses a prefix not owned by the current uid; run as the host user
 # so instances/*/compatdata/pfx (created by native sb) is usable.
 user_args=( --user "$(id -u):$(id -g)" )

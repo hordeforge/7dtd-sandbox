@@ -57,6 +57,23 @@ Nothing is deprecated ahead of removal in this repository today.
   int, so a junk value in another instance's `instance.env` raised a
   `ValueError` out of an unrelated create. `scripts/test_sbconfig_fuzz.py`
   fuzzes the scan as a third target.
+- `sb <verb> --help` refused an alias the dispatcher runs: `sb fetch --help`,
+  `sb ls --help`, `sb run-launch --help` and `sb --version --help` answered
+  "unknown command" and exited 2, while the same spelling ran the command.
+  Each alias is in the per-command help gate now.
+- `docker-gui.sh` marked the X11 grant as taken when `xhost +local:` had
+  failed, so the revoke on the way out ran `xhost -local:` and took back a
+  grant somebody else had made. The flag is set by the grant succeeding.
+- The bring-up timeout was declared twice, as `SB_UP_TIMEOUT` and
+  `UP_PORT_WAIT_SEC`, both 180, and `sb up` read the second while `sb init`
+  reported the first. `SB_UP_TIMEOUT` is the one constant now.
+
+### Changed
+
+- Create, create-server and both arms of wipe build an instance game tree
+  through one helper (copy, prune Mods, write the platform), and both creates
+  share one rollback, so a fifth site cannot disagree about which platform an
+  instance runs with.
 
 ## [0.4.0] - 2026-09-28
 

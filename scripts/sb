@@ -135,12 +135,6 @@ sb_on_signal() {
 SB_DEFAULT_RES="1280x720"
 SB_DEFAULT_FULLSCREEN="0"
 
-# The fallback wait a bring-up uses when it names no timeout of its own, and
-# the number `sb init` reports. Both bring-up paths pass their own default
-# instead (UP_PORT_WAIT_SEC for `sb up`, RUN_BOTH_PORT_WAIT_SEC for
-# `sb run both`), so changing this does not change either of them.
-SB_UP_TIMEOUT=180
-
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for every usage error: a refused flag, a bad declaration, a missing
 # instance, an invalid name, an unknown command, and a missing argument. Exit 1
@@ -328,7 +322,7 @@ The contract is the only thing on stdout, so the call can be evaluated:
 Progress and diagnostics go to stderr.
 EOF
       ;;
-    launch|launch-server) cat <<'EOF'
+    launch|launch-server|run-launch) cat <<'EOF'
 Usage: sb launch <name> [-- args...] | sb launch-server <name> [-- args...]
 
 Run an existing instance in the foreground and block. 'launch' is the client
@@ -400,7 +394,7 @@ keeps the instance.
   --dry-run  report what would be removed and change nothing
 EOF
       ;;
-    list) cat <<'EOF'
+    list|ls) cat <<'EOF'
 Usage: sb list
 
 One row per instance: name, kind (client/server), running state, and path.
@@ -435,7 +429,7 @@ is an eval:
 Both instance kinds print it, a client including the resolved SB_SCREEN_ARGS.
 EOF
       ;;
-    fetch-base) cat <<'EOF'
+    fetch-base|fetch) cat <<'EOF'
 Usage: sb fetch-base [--validate | --seed-from-steam]
 
 steamcmd-pull the pristine client base (the Windows depot is forced, the
@@ -470,7 +464,7 @@ Steam-ownership guard. 'init' prints the first part only and creates the
 directory layout.
 EOF
       ;;
-    version) cat <<'EOF'
+    version|--version|-V) cat <<'EOF'
 Usage: sb version
 
 Print the shipped version. The canonical declaration is SB_VERSION in scripts/sb.
@@ -1168,6 +1162,51 @@ validate_admin_name() {
     || usage_err "invalid admin name '$1' (use [A-Za-z0-9._-], not starting with '-')"
 }
 
+# The three steps every fresh instance game tree gets, in order: a copy of the
+# base, its Mods pruned back to the stock loader, and the platform surface its
+# kind runs with. One definition, because create, create-server and both arms
+# of wipe do the same three, and a fifth site would be free to disagree about
+# which platform an instance runs with.
+reset_instance_game() { # reset_instance_game <inst> <base> <what> <platform>
+  copy_tree "$2" "$1/game" "$3"
+  prune_instance_mods "$1"
+  write_platform "$1/game/platform.cfg" "$4"
+}
+
+# The directories a server instance writes into, at create and every bring-up.
+prepare_server_dirs() { # prepare_server_dirs <inst>
+  mkdir -p "$1/userdata/Saves" "$1/userdata/Logs" "$1/logs"
+}
+
+# Run a create body in the directory this run just claimed. A failure anywhere
+# in it (a copy that ran out of space, a seeding error) would otherwise leave
+# an instance dir that refuses every retry with "already exists" and has to
+# be removed by hand. The subshell keeps `die` from ending the whole run, so
+# the rollback is reachable; the ownership list takes the partial tree with it
+# when the create is interrupted instead of failing.
+run_new_instance() { # run_new_instance <label> <inst> <body...>
+  local label="$1" inst="$2"; shift 2
+  sb_own_pending "$inst"
+  if ! (
+    set -e
+    "$@"
+  ); then
+    rm -rf "$inst"
+    sb_release_pending "$inst"
+    die "$label was not created; the partial tree at $inst is removed"
+  fi
+  sb_release_pending "$inst"
+}
+
+# The create lock around one command, in a subshell so the fd it holds is
+# scoped to it and never inherited by an exec'd process.
+with_create_lock() { # with_create_lock <cmd...>
+  (
+    flock 9
+    "$@"
+  ) 9>>"$CREATE_LOCK"
+}
+
 cmd_create_server() {
   # Shifted, so "$@" below is the --admin extras and not the instance name
   # itself: without this the server declared its own name as a Local admin.
@@ -1204,31 +1243,11 @@ cmd_create_server() {
   # Before the copy, so nothing the body writes below is ever published under
   # the umask.
   restrict_instance_dir "$inst"
-  # Owned until the body below succeeds, so an interrupt during the copy takes
-  # the partial tree with it; the rollback below covers the paths that fail on
-  # their own.
-  sb_own_pending "$inst"
-  # Everything past this point works on a directory nothing else has claimed
-  # yet. A failure anywhere in it (a copy that ran out of space, a seeding
-  # error) would otherwise leave an instance dir that refuses every retry with
-  # "already exists" and has to be removed by hand. The subshell keeps `die`
-  # from ending the whole run, so the rollback is reachable.
-  #
-  # The inner subshell holds the create lock: the port block is allocated by
-  # scanning the other instances and then recorded in instance.env, and two
-  # creates running that sequence at once hand one block to two instances.
-  if ! (
-    set -e
-    (
-      flock 9
-      create_server_body "$inst" "$name" "$admins"
-    ) 9>>"$CREATE_LOCK"
-  ); then
-    rm -rf "$inst"
-    sb_release_pending "$inst"
-    die "server instance '$name' was not created; the partial tree at $inst is removed"
-  fi
-  sb_release_pending "$inst"
+  # Under the create lock: the port block is allocated by scanning the other
+  # instances and then recorded in instance.env, and two creates running that
+  # sequence at once hand one block to two instances.
+  run_new_instance "server instance '$name'" "$inst" \
+    with_create_lock create_server_body "$inst" "$name" "$admins"
   # Read back through the same validation the bring-up runs, so the range this
   # reports is the range the server will be given, and the block's last port
   # comes from the one constant rather than a literal offset.
@@ -1245,10 +1264,8 @@ create_server_body() {
   local port
   port="$(alloc_server_ports "$name")"
   echo "copying server base into instance (reflink/COW)..."
-  copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
-  prune_instance_mods "$inst"
-  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
-  write_platform "$inst/game/platform.cfg" Steam
+  reset_instance_game "$inst" "$SERVER_BASE_GAME" "server base game" Steam
+  prepare_server_dirs "$inst"
   # Written before seeding and rendering: both read their declaration back
   # from this file, so the instance is described in one place.
   {
@@ -1287,7 +1304,7 @@ cmd_launch_server() {
   local game="$inst/game"
   instance_server_ports "$inst"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
-  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  prepare_server_dirs "$inst"
   local cfg
   apply_server_config "$inst" "$name" "$port" "$telnet_port"
   cfg="$APPLIED_CONFIG"
@@ -1640,20 +1657,8 @@ cmd_create() {
   # Before the copy, so nothing the body writes below is ever published under
   # the umask.
   restrict_instance_dir "$inst"
-  # Owned until the body below succeeds, so an interrupt during the copy takes
-  # the partial tree with it.
-  sb_own_pending "$inst"
-  # Rolled back on failure for the same reason as create_server: a half-built
-  # instance dir refuses every retry with "already exists".
-  if ! (
-    set -e
+  run_new_instance "instance '$name'" "$inst" \
     create_client_body "$inst" "$name" "$res" "$fullscreen"
-  ); then
-    rm -rf "$inst"
-    sb_release_pending "$inst"
-    die "instance '$name' was not created; the partial tree at $inst is removed"
-  fi
-  sb_release_pending "$inst"
   echo "created instance '$name' at $inst"
 }
 
@@ -1662,9 +1667,7 @@ cmd_create() {
 create_client_body() {
   local inst="$1" name="$2" res="$3" fullscreen="$4"
   echo "copying base game into instance (reflink/COW)..."
-  copy_tree "$BASE_GAME" "$inst/game" "base game"
-  prune_instance_mods "$inst"
-  write_platform "$inst/game/platform.cfg" Local
+  reset_instance_game "$inst" "$BASE_GAME" "base game" Local
   mkdir -p "$inst/compatdata" "$inst/logs"
   {
     cat <<EOF
@@ -1713,9 +1716,9 @@ TERM_POLL_SEC=1
 
 # How long a bring-up waits for the game port to accept, when the caller named
 # no --timeout. `sb up` is the harness form, so its default is the generous
-# one; `sb run both` launches a client behind the same wait, so it uses the
-# shorter one and says so on failure.
-UP_PORT_WAIT_SEC=180
+# one, and `sb init` reports it; `sb run both` launches a client behind the
+# same wait, so it uses the shorter one and says so on failure.
+SB_UP_TIMEOUT=180
 RUN_BOTH_PORT_WAIT_SEC=90
 
 # TERM, then KILL whatever is still standing, for every process bound to this
@@ -1817,9 +1820,7 @@ cmd_wipe() {
   fi
   if [[ "$kind" == server ]]; then
     [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
-    copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
-    prune_instance_mods "$inst"
-    write_platform "$inst/game/platform.cfg" Steam
+    reset_instance_game "$inst" "$SERVER_BASE_GAME" "server base game" Steam
     rm -rf "$inst/userdata"
     mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs"
     seed_sandbox_admins "$inst"
@@ -1831,9 +1832,7 @@ cmd_wipe() {
     return 0
   fi
   require_base
-  copy_tree "$BASE_GAME" "$inst/game" "base game"
-  prune_instance_mods "$inst"
-  write_platform "$inst/game/platform.cfg" Local
+  reset_instance_game "$inst" "$BASE_GAME" "base game" Local
   restrict_instance_dir "$inst"
   seed_offline_prefs "$inst"
   local roam="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie"
@@ -2194,7 +2193,7 @@ stage_fastconnect() {
 start_server_detached() {
   local inst="$1" name="$2" port="$3" telnet_port="$4"
   local cfg
-  mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
+  prepare_server_dirs "$inst"
   # Truncated per start: the game rotates its own server.log, but this capture
   # is the sandbox's, and a suite that brings the same instance up hundreds of
   # times would grow it without bound. One start's output per file.
@@ -2272,7 +2271,7 @@ wait_for_port() {
 # `sb stop <name>` (same instance-scoped process match as every other path).
 cmd_up() {
   local name="$1"; shift || true
-  local timeout="$UP_PORT_WAIT_SEC"
+  local timeout="$SB_UP_TIMEOUT"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout) shift; [[ $# -gt 0 ]] || usage_err "--timeout needs a value"; timeout="$1" ;;

@@ -76,10 +76,12 @@ done
 
 # Every verb carries a page, reachable both ways, and each names its own flags
 # rather than only restating the verb: a caller reading `sb up --help` has to
-# learn that --timeout exists without running the command.
+# learn that --timeout exists without running the command. The alias spellings
+# are in the list too: a name the dispatcher runs has a page, or a caller who
+# typed the alias is told the command does not exist.
 for c in run create create-server up stage render-config launch launch-server \
          wipe destroy stop list status logs env fetch-base fetch-server-base \
-         doctor init version help; do
+         doctor init version help run-launch fetch ls --version -V; do
   for page in "$("$SB" "$c" --help 2>/dev/null)" "$("$SB" help "$c" 2>/dev/null)"; do
     if [[ "$page" != Usage:* ]]; then
       echo "FAIL: no usage page for 'sb $c --help'" >&2
