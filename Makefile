@@ -54,7 +54,7 @@ DOCKER_FETCH_IMAGE ?= 7dtd-safehouse:fetch
 BASE_VOLUME ?= 7dtd-base
 
 .DEFAULT_GOAL := help
-.PHONY: help check lint format test coverage clean version doctor docker docker-fetch
+.PHONY: help check lint format test test-one coverage clean version doctor docker docker-fetch
 .PHONY: check-analyzer-versions
 .PHONY: fetch-base-docker fetch-server-base-docker base-volume
 .PHONY: fetch-base fetch-server-base create create-server up stage render-config
@@ -67,6 +67,8 @@ help:
 	@echo "                shellcheck and ruff must be on PATH; without one it warns and CI fails"
 	@echo "  make format   apply ruff's formatting to scripts/*.py"
 	@echo "  make test     check + every scripts/test_*.{sh,py}; no game needed"
+	@echo "  make test-one GATE=scripts/test_sb_cli.sh   one gate, for the edit loop"
+	@echo "                ARGS='--iters 50' reaches a gate that takes options"
 	@echo "  make coverage not available here (see the target for why)"
 	@echo "  make clean    remove generated output only"
 	@echo "  make version  the shipped version (SB_VERSION in scripts/sb)"
@@ -159,6 +161,28 @@ format:
 test: check
 	set -e; for t in $(TESTS); do echo "== $$t"; bash $$t; done
 	set -e; for t in $(PYTESTS); do echo "== $$t"; python3 $$t; done
+
+# One gate, which is the edit-test loop. `make test` is the whole verdict and
+# is right before a push, not on every change, and the only way to run one gate
+# without it is to know which file it is and to remember the interpreter: a .sh
+# gate under bash, a .py gate under python3. Both come from the suffix here, so
+# there is one way to run a gate and `make test` is the loop this one is carved
+# out of. A GATE that names nothing, or names a file `test` does not run, is a
+# usage error (2) that lists the gates, rather than a file executed because it
+# happened to exist: `make test-one GATE=scripts/sb` used to print sb's help
+# and exit 0, which reads as a passing gate. ARGS is passed to the gate, so a
+# gate that takes options (the fuzzer's --iters/--seed) is reachable without
+# knowing its interpreter; it is left unquoted on purpose, the way a Makefile
+# spells an argument list.
+test-one:
+	@test -n "$(GATE)" || { echo "usage: make test-one GATE=scripts/test_sb_cli.sh"; exit 2; }
+	@case " $(TESTS) $(PYTESTS) " in *" $(GATE) "*) ;; \
+		*) echo "not a gate: $(GATE)"; \
+		   echo "gates:"; \
+		   for t in $(TESTS) $(PYTESTS); do echo "  $$t"; done; \
+		   exit 2 ;; \
+	esac
+	@case "$(GATE)" in *.py) python3 "$(GATE)" $(ARGS) ;; *) bash "$(GATE)" $(ARGS) ;; esac
 
 # Deliberately absent rather than faked. Line coverage of `sb` needs kcov, and
 # a badge this repository's CI does not regenerate is worse than no badge

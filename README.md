@@ -34,6 +34,20 @@ Makefile are the version home that CI installs from, and a `make check` that
 finds a different one installed says which version it wants and how to get it.
 `make format` applies ruff's formatting.
 
+While editing, run the one gate you touched rather than the whole suite:
+
+```bash
+make test-one GATE=scripts/test_sb_cli.sh   # one gate, interpreter picked for you
+make test-one GATE=scripts/test_sbconfig_fuzz.py ARGS="--iters 50 --seed 7"
+make check                                   # the static half, a few seconds
+make test                                    # the whole verdict, before a push
+```
+
+Gates are discovered from the tree, so a gate added today runs today. `ARGS` is
+passed to the gate, so a gate that takes options is reachable from here too. A
+`GATE` that names no file, or names a file `make test` does not run, exits 2 and
+lists the gates.
+
 Requirements: a Linux host (x86-64), `bash`, and `python3` 3.8 or newer on
 `PATH` for `scripts/sbconfig.py` (the serverconfig renderer, admin seeder and
 port derivation all run through it; `sb doctor` reports the interpreter it
