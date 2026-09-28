@@ -34,7 +34,7 @@ SB_CONFIG="${SB_CONFIG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sbconfig.p
 SB_PY="${SB_PY:-python3}"
 # Oldest interpreter sbconfig.py supports, mirrored in its MIN_PYTHON and
 # pinned equal by scripts/test_sb_cli.sh.
-SB_PY_MIN="3.7"
+SB_PY_MIN="3.8"
 
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for a refused flag, a bad declaration, a missing instance, and the
@@ -92,7 +92,7 @@ Standard env: SANDBOX_HOME, SANDBOX_INSTANCES, SANDBOX_BASE_GAME,
 SANDBOX_SERVER_BASE_GAME, SANDBOX_STEAMCMD, STEAM_APPID, SERVER_APPID,
 STEAM_ROOT, PROTON, GFX_API, SB_RES (default 1280x720),
 SB_FULLSCREEN (default 0=windowed), SB_CONFIG, SB_PY (default python3, needs
-3.7+), STEAMCMD_USER, 7DTD_PLAYER_NAME, STEAM_SEED_SOURCE, FASTCONNECT_DIST.
+3.8+), STEAMCMD_USER, 7DTD_PLAYER_NAME, STEAM_SEED_SOURCE, FASTCONNECT_DIST.
 
 Host: Linux, bash, and that python3 on PATH (sb doctor reports both).
 
@@ -232,22 +232,12 @@ copy_tree() {
   die "could not copy $what from $src to $dst"
 }
 
-write_local_platform() {
-  cat > "$1" <<'EOF'
-platform=Local
-crossplatform=None
-serverplatforms=Steam,LAN,Local,
-EOF
-}
-
-# A server instance keeps the stock platform surface (Steam listed first) but
+# The platform surface an instance runs with. A client is Local only (no Steam
+# auth, no EOS); a server keeps the stock surface with Steam listed first, but
 # still admits Local joins, which is what the seeded admins authenticate with.
-write_server_platform() {
-  cat > "$1" <<'EOF'
-platform=Steam
-crossplatform=None
-serverplatforms=Steam,LAN,Local,
-EOF
+# Only the first line differs, so it is the only argument.
+write_platform() { # write_platform <cfg> <platform>
+  printf 'platform=%s\ncrossplatform=None\nserverplatforms=Steam,LAN,Local,\n' "$2" > "$1"
 }
 
 ensure_local_platform() {
@@ -255,7 +245,7 @@ ensure_local_platform() {
   if [[ -f "$cfg" ]] && grep -q '^platform=Local' "$cfg"; then
     return 0
   fi
-  write_local_platform "$cfg"
+  write_platform "$cfg" Local
   echo "instance platform.cfg set to Local (no Steam auth, no EOS)"
 }
 
@@ -585,7 +575,7 @@ create_server_body() {
   copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
   prune_instance_mods "$inst"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
-  write_server_platform "$inst/game/platform.cfg"
+  write_platform "$inst/game/platform.cfg" Steam
   # Written before seeding and rendering: both read their declaration back
   # from this file, so the instance is described in one place.
   cat > "$inst/instance.env" <<EOF
@@ -886,7 +876,7 @@ create_client_body() {
   echo "copying base game into instance (reflink/COW)..."
   copy_tree "$BASE_GAME" "$inst/game" "base game"
   prune_instance_mods "$inst"
-  write_local_platform "$inst/game/platform.cfg"
+  write_platform "$inst/game/platform.cfg" Local
   mkdir -p "$inst/compatdata" "$inst/logs"
   cat > "$inst/instance.env" <<EOF
 # 7dtd-client-sandbox instance contract (source or eval this file).
@@ -963,7 +953,7 @@ cmd_wipe() {
     rm -rf "$inst/game"
     copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
     prune_instance_mods "$inst"
-    write_server_platform "$inst/game/platform.cfg"
+    write_platform "$inst/game/platform.cfg" Steam
     rm -rf "$inst/userdata"
     mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs"
     seed_sandbox_admins "$inst"
@@ -978,7 +968,7 @@ cmd_wipe() {
   rm -rf "$inst/game"
   copy_tree "$BASE_GAME" "$inst/game" "base game"
   prune_instance_mods "$inst"
-  write_local_platform "$inst/game/platform.cfg"
+  write_platform "$inst/game/platform.cfg" Local
   seed_offline_prefs "$inst"
   local roam="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie"
   rm -rf "$roam/Saves" "$roam/SavesLocal" "$roam/GeneratedWorlds" 2>/dev/null || true

@@ -77,8 +77,9 @@ PORT_BLOCK_COUNT = 100
 # Oldest interpreter this module supports. It is the only Python in the tree,
 # and `sb` shells out to whatever `python3` the host ships, which on an older
 # distribution is older than anything here was ever run against. Declared so
-# `sb` can refuse with a version instead of failing inside a call.
-MIN_PYTHON = (3, 7)
+# `sb` can refuse with a version instead of failing inside a call. 3.8 is the
+# floor because `_atomic_write` unlinks its temp file with `missing_ok`.
+MIN_PYTHON = (3, 8)
 
 # FNV-1a 32-bit: a stable hash across interpreters and machines. Python's own
 # hash() is salted per process, so it would hand the same instance a different

@@ -112,8 +112,9 @@ expect_eq "undeclared property returns to the base template" \
 # declaration it had nothing to do with, and a key holding an unmatched `[`
 # made grep fail, which left instance.props holding only the key just
 # declared. Two defenses now: a key outside [A-Za-z_][A-Za-z0-9_]* never
-# reaches the upsert (asserted below), and the upsert matches a literal
-# `KEY=` prefix, which is what spares the neighbour here.
+# reaches the upsert (asserted below), so no key that does reach it can mean
+# anything but itself, and the upsert matches a literal `KEY=` prefix, which is
+# what spares the neighbour here.
 sb render-config srv-demo Game_World=underscore >/dev/null
 sb render-config srv-demo Game_World2=applied >/dev/null
 expect_eq "underscore key is applied"   "$(active_value "$cfg" Game_World2)" "applied"

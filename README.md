@@ -29,7 +29,7 @@ shellcheck (`.shellcheckrc`) over the shell, `ruff check` and
 compileall`. Shellcheck and ruff are both required rather than skipped when
 CI cannot find them. `make format` applies ruff's formatting.
 
-Requirements: a Linux host (x86-64), `bash`, and `python3` 3.7 or newer on
+Requirements: a Linux host (x86-64), `bash`, and `python3` 3.8 or newer on
 `PATH` for `scripts/sbconfig.py` (the serverconfig renderer, admin seeder and
 port derivation all run through it; `sb doctor` reports the interpreter it
 found). The client additionally needs Proton from a Steam install, the server

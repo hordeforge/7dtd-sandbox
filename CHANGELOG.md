@@ -230,9 +230,11 @@ Nothing is deprecated ahead of removal in this repository today.
   derived instead of raising. Linux directory names may hold such bytes, and
   `7dtd-loadgen` calls `sbconfig.py port-block` directly.
 - `scripts/test_sb_serverconfig.sh` asserted that `sb render-config` accepts a
-  key holding a `.`, which `validate_prop` refuses, so the gate failed on a
-  clean tree. It now pins the shipped contract: a pattern-shaped key is
-  refused, and the declaration beside it is untouched.
+  key holding a `.`, which `validate_prop` refuses, so the assertion aborted
+  the gate under `set -e` on a clean tree and every check after it, including
+  the port-block assertions, never ran. It now pins the shipped contract: a
+  key that is not a bare identifier is refused, so no key reaching the upsert
+  can mean anything but itself, and the declaration beside it is untouched.
 - `scripts/docker-gui.sh` names its container per invocation. A fixed name
   refused a second concurrent GUI client with "the container name is already in
   use", which is the one thing this sandbox otherwise runs in parallel.
@@ -243,6 +245,11 @@ Nothing is deprecated ahead of removal in this repository today.
   (-Experimental, 11.0, 10.0) instead of demanding -Experimental, and overlays
   the writable `dist.lock` on whichever Proton it found. A host on Proton 10 or
   11 could run the native client and was refused on the containerized path.
+- The declared interpreter floor is 3.8, not 3.7. `_atomic_write` unlinks its
+  temp file with `Path.unlink(missing_ok=...)`, which is 3.8, so on 3.7 the
+  write-error path raised `TypeError` instead of the `RuntimeError` that names
+  the file. `SB_PY_MIN` in `sb`, `MIN_PYTHON` in `sbconfig.py` and the README
+  all move together.
 
 ### Documentation
 
@@ -294,6 +301,13 @@ Nothing is deprecated ahead of removal in this repository today.
   contributors run. Both analyzers are now required in CI: `make check` fails
   rather than skipping when shellcheck or ruff is missing. A test gate's
   shebang matches its executable bit.
+- `write_local_platform` and `write_server_platform` were two copies of one
+  three-line file differing in a single line; they are one `write_platform`
+  with the platform as its second argument.
+- `sb` lost three functions with no caller: `env_value` (a byte-identical
+  second copy of `instance_env_value`), `require_env_value`, and `emit_env`
+  (whose only caller-facing helper, `shell_quote`, was itself a byte-identical
+  second copy of `shquote`).
 
 ## [0.3.0] - 2026-09-11
 
