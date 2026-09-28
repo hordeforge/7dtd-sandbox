@@ -1110,6 +1110,37 @@ alloc_server_ports() {
 # that process ran.
 CREATE_LOCK="$INSTANCES_DIR/.create.lock"
 
+# The per-instance lock, held across a command's check-then-act on one
+# instance. Without it two render-configs each rewrote instance.props from a
+# stale read and one declaration was lost, two `up`s both saw nothing running
+# and both started a server, and a stop between an up's /proc check and its
+# fork stopped nothing and left the new server running.
+#
+# Beside the create lock, outside every instance directory: an instance is
+# created and destroyed, and a lock inside it would be removed from under its
+# holder. Held on fd 7 by this shell, so a killed `sb` leaves no stale lock,
+# and every exec of a long-lived child (the game, the detached server) closes
+# fd 7 first, so a running game never pins its instance's lock.
+INSTANCE_LOCK_DIR="$INSTANCES_DIR/.locks"
+SB_INSTANCE_LOCK=""
+
+lock_instance() { # lock_instance <name>; a no-op for the name already held
+  # Re-entrant: `sb up` holds the lock when it creates the instance, and
+  # reopening fd 7 would drop the lock between the close and the new flock.
+  [[ "$SB_INSTANCE_LOCK" == "$1" ]] && return 0
+  require_flock
+  mkdir -p "$INSTANCE_LOCK_DIR"
+  exec 7>>"$INSTANCE_LOCK_DIR/$1.lock"
+  flock 7
+  SB_INSTANCE_LOCK="$1"
+}
+
+release_instance_lock() {
+  [[ -n "$SB_INSTANCE_LOCK" ]] || return 0
+  exec 7>&-
+  SB_INSTANCE_LOCK=""
+}
+
 # Local player names this server admits as permission_level=0. Declared once at
 # create time and read back from instance.env, never discovered by scanning
 # whatever other instances exist: the same declaration must produce the same
@@ -1242,6 +1273,9 @@ cmd_launch_server() {
   local name="$1"; shift || true
   local inst
   inst="$(instance_dir "$name")"
+  # Held across the config render and the admin seed, so a second bring-up
+  # of this instance cannot write a serverconfig under this one's feet.
+  lock_instance "$name"
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
   [[ "$(env_value "$inst" SERVER_KIND)" == server ]] || die "'$name' is a client instance; use 'sb launch'"
   local game="$inst/game"
@@ -1258,6 +1292,7 @@ cmd_launch_server() {
   echo "userdata:  $inst/userdata"
   echo "log:       $inst/logs/server.log"
   cd "$game"
+  release_instance_lock
   exec env SB_INSTANCE="$inst" \
     LD_LIBRARY_PATH="$(collect_mods_native_path "$game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     ./7DaysToDieServer.x86_64 -configfile="$cfg" -logfile "$inst/logs/server.log" \
@@ -1705,6 +1740,9 @@ terminate_instance() {
 cmd_destroy() {
   local name="$1" inst
   validate_name "$name"
+  # Serialized against up, launch and wipe on this instance: a stop between a
+  # bring-up's /proc check and its fork stopped nothing and left it running.
+  lock_instance "$name"
   inst="$INSTANCES_DIR/$name"
   # Teardown is re-run: a harness whose previous pass died, or whose caller
   # invokes the teardown unconditionally, destroys an instance that is already
@@ -1726,6 +1764,9 @@ cmd_destroy() {
 cmd_wipe() {
   local name="$1" inst
   inst="$(instance_dir "$name")"
+  # The running check and the tree replacement are one critical section: a
+  # launch that started in between would read a game tree mid-replacement.
+  lock_instance "$name"
   instance_kind "$inst"
   local kind="$INSTANCE_KIND"
   local pids
@@ -1873,6 +1914,10 @@ cmd_launch() {
   local name="$1"; shift || true
   local inst
   inst="$(instance_dir "$name")"
+  # Held across the prefix and platform writes below, which a concurrent wipe
+  # would otherwise be replacing the tree under; released before the game
+  # starts.
+  lock_instance "$name"
   instance_kind "$inst"
   if [[ "$INSTANCE_KIND" == server ]]; then
     die "'$name' is a server instance; use 'sb launch-server $name'"
@@ -1919,6 +1964,7 @@ cmd_launch() {
   echo "player:    $player"
   echo "window:    ${win_args[*]:-<as passed>}"
   cd "$game"
+  release_instance_lock
   exec env 7DTD_PLAYER_NAME="$player" "$PROTON" run ./7DaysToDie.exe "${gfx[@]}" -nogs -noeac -skipintro -SkipNewsScreen=true \
     -logfile "$win_log" "${win_args[@]}" "$@"
 }
@@ -1926,6 +1972,9 @@ cmd_launch() {
 cmd_stop() {
   local name="$1" inst
   validate_name "$name"
+  # Serialized against up, launch and wipe on this instance: a stop between a
+  # bring-up's /proc check and its fork stopped nothing and left it running.
+  lock_instance "$name"
   inst="$INSTANCES_DIR/$name"
   local pids=()
   if [[ -d "$inst" ]]; then
@@ -2067,6 +2116,9 @@ prune_instance_mods() {
 # make `sb wipe` and the base copy lie about what the instance runs.
 stage_mods() {
   local inst="$1"; shift
+  # Held for the whole staging, so a stage beside a wipe or a second stage of
+  # the same instance cannot replace the Mods tree under it.
+  lock_instance "$(basename "$inst")"
   local src base
   mkdir -p "$inst/game/Mods"
   for src in "$@"; do
@@ -2114,9 +2166,10 @@ start_server_detached() {
   # to init and this shell has no child left to wait on. Backgrounding it
   # instead left the server parented to `sb`, and `sb up` then sat in do_wait
   # forever after its port check had already passed. `sb run both` never saw
-  # this because it execs the client over itself straight afterwards.
+  # this because it execs the client over itself straight afterwards. fd 7 is
+  # closed so the server does not hold its instance lock for its lifetime.
   ( cd "$inst/game" \
-    && exec setsid --fork env SB_INSTANCE="$inst" \
+    && exec 7>&- setsid --fork env SB_INSTANCE="$inst" \
          LD_LIBRARY_PATH="$(collect_mods_native_path "$inst/game")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
          ./7DaysToDieServer.x86_64 \
            -configfile="$cfg" -logfile "$inst/logs/server.log" \
@@ -2188,6 +2241,10 @@ cmd_up() {
   done
   [[ "$timeout" =~ ^[0-9]+$ ]] || usage_err "--timeout must be a whole number of seconds"
   validate_name "$name"
+  # Held across the running check, the config render, the start and the port
+  # wait: without it two `up`s both saw nothing running and both started a
+  # server on one port.
+  lock_instance "$name"
   ensure_instance "$name" cmd_create_server "$name" >/dev/null
   local inst="$INSTANCES_DIR/$name"
   [[ -f "$inst/instance.env" ]] || die "'$name' is not a server instance (missing instance.env)"
@@ -2232,6 +2289,9 @@ cmd_render_config() {
   local name="$1"; shift || true
   local inst
   inst="$(instance_dir "$name")"
+  # The upsert into instance.props is a read-modify-write and the render
+  # reads it back, so two render-configs on one instance lost a declaration.
+  lock_instance "$name"
   # The port pair is checked before anything is recorded, not after. Rendering
   # needs it, and a hand-edited instance.env that fails the check left the
   # declarations already written to instance.props with no rendered config
@@ -2274,6 +2334,7 @@ cmd_run() {
       instance_server_ports "$srv_inst"
       local srv_port="$SERVER_PORT" srv_telnet_port="$SERVER_TELNET_PORT"
 
+      lock_instance "$srv_name"
       echo "starting server '$srv_name' (port $srv_port) in background..."
       start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$srv_telnet_port"
       echo "waiting for server port $srv_port ..."
@@ -2289,6 +2350,7 @@ cmd_run() {
       # reads the canonical name, so hand it over with env(1). cmd_launch
       # re-resolves it via printenv and passes it to the game the same way
       # launch_client.sh does.
+      release_instance_lock
       exec env 7DTD_CONNECT="127.0.0.1:$srv_port" \
         SB_CLIENT_CONNECT="127.0.0.1:$srv_port" \
         bash "$0" launch "$cli_name" -connect="127.0.0.1:$srv_port" "$@"

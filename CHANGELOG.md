@@ -32,6 +32,17 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ## [Unreleased]
 
+### Fixed
+
+- Concurrent `sb` invocations against one instance are serialized. The
+  `/proc` scan before `up` and `stop`, the `instance.props` upsert behind
+  `render-config`, and the tree replacement in `wipe` and `stage` were
+  check-then-act with nothing holding them together: two concurrent
+  `render-config` calls lost one declaration, and two `up`s could both start
+  a server. Each instance verb now holds an advisory `flock`
+  (`$SANDBOX_INSTANCES/.locks/<name>.lock`), released when `sb` exits and
+  closed before any game is exec'd.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added

@@ -83,6 +83,7 @@ request. No game, no Proton, no steamcmd.
 | `scripts/test_sb_copy.sh` | A copy that fails part-way costs the caller nothing: a failed `sb wipe` and a failed re-stage leave the instance tree and the modlet they were replacing intact, leave no staging or replaced-tree debris, and report `cp`'s own reason. Every replacing copy is staged and published by rename, because deleting the old tree first lost it whenever the rebuild failed. An interrupted run costs the caller the same: a wipe and a create signalled mid-copy leave no staging tree, no replaced tree and no partial instance directory, and the tree moved aside is put back rather than deleted |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`, with nothing but the contract on stdout, so `eval "$(sb up <name>)"` works; a running instance is refused; a re-run against the directory a killed create left behind rebuilds the instance and still refuses a live one; a server that never binds fails inside its timeout, from both sides, so the wait is the seconds the harness asked for and not a whole-second reading of the uptime counter; `sb list` and `sb stop` see the running instance and leave its idle neighbour alone |
 | `scripts/test_sb_cli.sh` | Exit-code surface: every wrong command line (an unknown verb, a missing argument, a bare `--help` on a verb) is exit 2, never 1, and a near-miss verb is answered with the command meant; every verb has a `--help` page reachable both as `sb <verb> --help` and `sb help <verb>`, and each names its own flags; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused; the declared python floor in `sb` and `MIN_PYTHON` in `sbconfig.py` are one number, a missing interpreter is named, and a caller-supplied `-screen-` argument is still recognised; both instance kinds are created 0700; a re-run teardown converges (`sb destroy` of an instance that is already gone exits 0 and does not stop at that name), and the auto-create path removes an unfinished instance and refuses a directory no create wrote; an instances root a `KEY=VALUE` `instance.env` line cannot carry is refused at create, and an undeclared window falls back to the one `SB_DEFAULT_RES`/`SB_DEFAULT_FULLSCREEN`; `sb init` reports the resolved configuration on a host with no Proton rather than dying before its first line; the contributor loop is discoverable and refuses what it cannot run (`make help` and the README name `make test-one`, a `GATE` that names no gate is exit 2 and lists the gates, and a real one runs through it), and the helpers a case sources out of `sb` carry their own dependencies, so a grown `env_value` does not leave the gate dying on a name error |
+| `scripts/test_sb_lock.sh` | Concurrent `sb` invocations: exactly one create of a name wins and its tree is whole; concurrent creates never share a port block; concurrent declarations on one instance all survive and all reach the config; concurrent stages into one instance both land whole |
 | `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
 | `scripts/test_sbconfig_fuzz.py` | The two untrusted-input parsers (`set_property` / `active_value` over a serverconfig template, `seed_admins` over a `serveradmin.xml` left by an earlier run) hold their invariants on mutated, structure-aware documents: write/read round trip, well-formed output, 0600 after a rewrite, declared admins at level 0, idempotence, and a per-call time budget. Seeded and deterministic (`--seed`, repeatable, `--iters`); a finding prints a shrunk reproducer, and the seed that found it is pinned in `REGRESSION_SEEDS` and replayed on every push, because a generator kept passing on `SEED` alone while other seeds each found a broken rewrite. The `>` inside an attribute value ends the tag the upsert rewrites, and an adopted entry carrying only `name` is granted without a `userid` for stock auth to match; both are in the seed list and in `test_sbconfig.py` |
 
@@ -305,6 +306,22 @@ the directory holds nothing outside what a create writes: a directory carrying
 anything else was put there by a person and is refused by name, not deleted.
 `sb destroy` follows the same rule for the other end: an instance that is
 already gone is exit 0, like `sb stop`, because teardown is re-run.
+
+## Concurrency between harnesses
+
+Two harnesses on one machine are two `sb` processes, and every verb that
+touches an instance is a check-then-act over shared state: the existence test
+before the copy, the recorded port blocks the allocator scans, the `/proc` scan
+before a start or a stop. A create claims its directory with `mkdir` (never
+`mkdir -p` after a test) and allocates its port block under the create lock
+(`$SANDBOX_INSTANCES/.create.lock`). Every later verb on one instance (`up`,
+`stop`, `wipe`, `destroy`, `launch`, `launch-server`, `render-config`,
+`stage`) holds that instance's `flock`
+(`$SANDBOX_INSTANCES/.locks/<name>.lock`, `lock_instance`, fd 7). `flock` is
+released when `sb` exits, so a killed command leaves no stale lock, and every
+exec of a long-lived child closes fd 7 first, so a running game never pins its
+instance lock. `scripts/test_sb_lock.sh` runs those paths concurrently and
+asserts the outcomes.
 
 ## The contract (sibling harnesses)
 
