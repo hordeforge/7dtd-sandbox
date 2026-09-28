@@ -1176,6 +1176,10 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
 # bound is an exact prefilter and the numeric compare only ever sees 1..99999.
 instance_server_ports() { # instance_server_ports <inst>; sets SERVER_PORT and SERVER_TELNET_PORT
   local inst="$1"
+  # Through env_value, so a hand-edited duplicate resolves the way every other
+  # reader resolves it: last declaration wins. Reading the first line here made
+  # the server bind one port while `sb env` handed the harness the other, and
+  # the harness then missed a port nothing was listening on.
   SERVER_PORT="$(env_value "$inst" SERVER_PORT)"
   SERVER_TELNET_PORT="$(env_value "$inst" SERVER_TELNET_PORT)"
   [[ "$SERVER_PORT" =~ ^[1-9][0-9]*$ ]] \

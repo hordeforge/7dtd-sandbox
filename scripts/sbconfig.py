@@ -20,7 +20,11 @@ A key the template does not name at all is warned about on stderr: it would be
 inserted and then read by nobody.
 
 seed-admins upserts a `permission_level="0"` Local entry for each name read
-from stdin, one per line, plus the three fixed names in DEFAULT_ADMIN_NAMES.
+from stdin, one per line, plus the three fixed names in DEFAULT_ADMIN_NAMES,
+and revokes the entries it seeded for a name the declaration no longer lists,
+so the file is a function of the declaration in both directions. The names it
+owns carry SEED_MARKER; an entry without it was written by a person or by the
+game and is left alone.
 The names arrive on stdin rather than as arguments because an argument is
 world-readable through /proc/<pid>/cmdline for as long as the process lives,
 which publishes the player names this file admits to every account on the
@@ -64,6 +68,12 @@ from xml.sax.saxutils import escape, unescape
 # discovered: the same three land in every instance on every host, so they
 # are not a function of the machine's instance list.
 DEFAULT_ADMIN_NAMES = ("Player", "client", "admin")
+
+# Attribute marking a `<user>` entry this module wrote. It is what makes a
+# revocation safe: a name dropped from the declaration loses its level-0 entry,
+# while an admin a person or the game added is never touched. The game ignores
+# an attribute it does not read.
+SEED_MARKER = "sbseed"
 
 SETTINGS_CLOSER = "</ServerSettings>"
 
@@ -266,6 +276,11 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
     failing to bind, which names the port that clashed. The stat of the
     instances dir itself is inside that promise too: a sandbox home another
     account owns used to escape it as an unhandled OSError.
+
+    The last declaration in a file is the one that instance binds, which is
+    what `sb env` hands a harness and what the shell's own last-one-wins
+    settles, so a superseded line is not a claim and is not counted: counting
+    it reserved a block nobody was using and shrank the range for everyone.
     """
     taken: set[int] = set()
     try:
@@ -286,16 +301,19 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
         except OSError as ex:
             print(f"WARN: skipping unreadable {env}: {ex}", file=sys.stderr)
             continue
+        claimed = ""
         for line in text.splitlines():
             key, sep, value = line.partition("=")
-            # isascii() before isdigit(): a str of Unicode decimal digits is a
-            # digit string to Python but not one to int() when it holds a
-            # superscript, so `SERVER_PORT=27²` raised ValueError out of a scan
-            # that exists to be tolerant of another instance's file. ASCII
-            # digits are the only ones this declares.
-            port = value.strip()
-            if sep and key.strip() == "SERVER_PORT" and port.isascii() and port.isdigit():
-                taken.add(int(port))
+            if sep and key.strip() == "SERVER_PORT":
+                claimed = value.strip()
+
+        # isascii() before isdigit(): a str of Unicode decimal digits is a
+        # digit string to Python but not one to int() when it holds a
+        # superscript, so `SERVER_PORT=27²` raised ValueError out of a scan
+        # that exists to be tolerant of another instance's file. ASCII
+        # digits are the only ones this declares.
+        if claimed.isascii() and claimed.isdigit():
+            taken.add(int(claimed))
     return taken
 
 
@@ -305,6 +323,12 @@ def port_block(name: str, taken: set[int]) -> int:
     The starting slot is a pure function of the name, so an instance gets the
     same ports on every machine no matter what was created before it. The
     probe only moves when another instance already recorded that block.
+
+    A block is free when none of the PORT_BLOCK_SIZE ports it covers is
+    claimed, not when its first port is unclaimed: a claim recorded on a port
+    inside somebody else's block (a hand-edited instance.env, an older layout)
+    is a port a server is on, and testing only the first port handed that
+    block out a second time.
     """
     start = fnv1a(name) % PORT_BLOCK_COUNT
     # The last block the probe can reach, so the whole range is checked against
@@ -321,7 +345,7 @@ def port_block(name: str, taken: set[int]) -> int:
     for offset in range(PORT_BLOCK_COUNT):
         slot = (start + offset) % PORT_BLOCK_COUNT
         port = PORT_BLOCK_BASE + slot * PORT_BLOCK_SIZE
-        if port not in taken:
+        if not any(port + i in taken for i in range(PORT_BLOCK_SIZE)):
             return port
     raise ValueError(
         f"no free port block for {name!r}: all {PORT_BLOCK_COUNT} blocks from "
@@ -355,14 +379,62 @@ def _use_utf8_stdio() -> None:
 def _user_line(name: str) -> str:
     return (
         f'    <user platform="Local" userid="{xml_attr(name)}" '
-        f'name="{xml_attr(name)}" permission_level="0" />'
+        f'name="{xml_attr(name)}" permission_level="0" {SEED_MARKER}="1" />'
     )
 
 
 _USER_TAG = re.compile(r"<user\b[^>]*>")
+_USER_CLOSE = re.compile(r"</user\s*>")
 _PLATFORM_LOCAL = re.compile(r'\bplatform="Local"')
 _USER_ID = re.compile(r'\b(?:userid|name)="([^"]*)"')
+_SEEDED = re.compile(rf'\b{SEED_MARKER}="1"')
 _ATTR = r'(\b%s=")([^"]*)(")'
+
+
+def _revoke_undeclared(text: str, declared: list[str]) -> tuple[str, bool]:
+    """Drop the seeded Local entries whose name the declaration no longer lists.
+
+    Seeding is an upsert, so a name removed from `SERVER_ADMINS` kept its
+    level-0 entry: the file was a function of every declaration the instance
+    had ever made rather than the one it makes now, and a player who had lost
+    admin still held it. Only entries carrying SEED_MARKER are dropped, so an
+    admin a person or the game wrote is never revoked by a reseed.
+
+    Returns (text, changed).
+    """
+    keep = {admin_key(name) for name in declared}
+    pieces: list[str] = []
+    cursor = 0
+    changed = False
+    for match in _USER_TAG.finditer(text):
+        if _in_comment(text, match.start()):
+            continue
+        tag = match.group(0)
+        if not _PLATFORM_LOCAL.search(tag) or not _SEEDED.search(tag):
+            continue
+        values = _USER_ID.findall(tag)
+        if any(admin_key(unescape(v, {"&quot;": '"'})) in keep for v in values):
+            continue
+        end = match.end()
+        if not tag.endswith("/>"):
+            close = _USER_CLOSE.search(text, end)
+            if close is None:
+                continue
+            end = close.end()
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        newline = text.find("\n", end)
+        line_end = len(text) if newline == -1 else newline + 1
+        if text[line_start : match.start()].strip() or text[end:line_end].strip():
+            start, stop = match.start(), end
+        else:
+            start, stop = line_start, line_end
+        pieces.append(text[cursor:start])
+        cursor = stop
+        changed = True
+    if not changed:
+        return text, False
+    pieces.append(text[cursor:])
+    return "".join(pieces), True
 
 
 def admin_key(name: str) -> str:
@@ -432,6 +504,13 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
         new = old[:-2].rstrip() + ' permission_level="0" />'
     else:
         new = old[:-1].rstrip() + ' permission_level="0">'
+    # An entry this module adopts is marked as its own, including one an
+    # earlier release wrote without the marker, so dropping the name from the
+    # declaration later revokes it rather than leaving it at level 0 forever.
+    if not _SEEDED.search(new):
+        marker = f' {SEED_MARKER}="1"'
+        closer = " />" if new.endswith("/>") else ">"
+        new = new[: -len(closer)].rstrip() + marker + closer
     if new == old:
         return text, False
     return text[: match.start()] + new + text[match.end() :], True
@@ -487,6 +566,9 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     for name in names:
         text, hit = _upsert_user(text, name)
         changed = changed or hit
+    # After the upserts, so a name that is declared is never a revoke candidate.
+    text, revoked = _revoke_undeclared(text, names)
+    changed = changed or revoked
     if changed:
         _atomic_write(out, text)
     return changed

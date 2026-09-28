@@ -123,6 +123,20 @@ if [[ -n "$out" ]]; then
   fail=1
 fi
 
+# A name dropped from the declaration loses its level-0 entry. Seeding was an
+# upsert, so the file was a function of every declaration the instance had ever
+# made and a player removed from SERVER_ADMINS kept dm/givetools forever.
+sed -i 's/^SERVER_ADMINS=.*/SERVER_ADMINS=client-sg/' "$INST/instance.env"
+seed_sandbox_admins "$INST"
+if grep -q 'userid="other-client"' "$admin"; then
+  echo "FAIL: an undeclared admin kept its level-0 entry" >&2
+  fail=1
+fi
+expect_grep "the declared admin survives the revocation" \
+  'platform="Local" userid="client-sg"[^>]*permission_level="0"' "$admin"
+python3 -c 'import sys,xml.etree.ElementTree as ET; ET.parse(sys.argv[1])' "$admin" \
+  || { echo "FAIL: revocation left broken XML in $admin" >&2; fail=1; }
+
 # Which functions seed. The four call sites (create-server / launch-server /
 # wipe / detached start) are checked by name below; counting occurrences of
 # the identifier across the file would also count the definition and every

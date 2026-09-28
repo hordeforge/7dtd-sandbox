@@ -25,6 +25,7 @@ import sbconfig
 # sbconfig's exit surface: 0 rendered, 1 a failed render or a missing key,
 # 2 a malformed invocation. Named so a change to it is a change here too.
 EXIT_USAGE = 2
+EXIT_FAILED = 1
 
 # The stock template mentions UserDataFolder twice: once commented, once
 # active. A render must leave both and change only the active one.
@@ -260,6 +261,75 @@ def test_seed_upserts_demoted_admin(tmp: Path) -> None:
     print("PASS seed_upserts_demoted_admin")
 
 
+def test_seed_revokes_an_undeclared_name(tmp: Path) -> None:
+    """Dropping a name from the declaration takes its level-0 entry with it.
+
+    Seeding was an upsert, so the file was a function of every declaration the
+    instance had ever made: a player removed from `SERVER_ADMINS` kept
+    permission_level=0 on every later launch, which is the whole authority
+    `dm` and `givetools` hang off.
+    """
+    _seed(tmp, "client-sg", "client-old")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    text = _seed(tmp, "client-sg")
+    users = {u.get("userid"): u.get("permission_level") for u in ET.fromstring(text).iter("user")}
+    assert "client-old" not in users, users
+    assert users.get("client-sg") == "0", users
+    declared = ["client-sg", *sbconfig.DEFAULT_ADMIN_NAMES]
+    assert sbconfig._revoke_undeclared(text, declared)[1] is False, "revocation is not idempotent"
+    assert admin.is_file()
+    print("PASS seed_revokes_an_undeclared_name")
+
+
+def test_seed_keeps_an_admin_it_did_not_write(tmp: Path) -> None:
+    """Revocation is scoped to entries this module seeded.
+
+    A Local admin a person added by hand, or one the game wrote, is not the
+    seeder's to delete: a reseed must leave it exactly as it found it.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Local" userid="by-hand" name="by-hand"'
+        ' permission_level="0" />\n'
+        "  </users>\n</adminTools>\n",
+        encoding="utf-8",
+    )
+    before = admin.read_bytes()
+    _seed(tmp, "client-sg")
+    after = admin.read_text(encoding="utf-8")
+    assert 'userid="by-hand"' in after, "a hand-written admin was revoked"
+    declared = ["client-sg", *sbconfig.DEFAULT_ADMIN_NAMES]
+    assert sbconfig._revoke_undeclared(after, declared)[1] is False
+    assert admin.is_file() and before != admin.read_bytes()
+    print("PASS seed_keeps_an_admin_it_did_not_write")
+
+
+def test_seed_revokes_the_paired_form(tmp: Path) -> None:
+    """A revoked paired `<user></user>` goes as a whole element.
+
+    Removing the start tag alone leaves an orphan `</user>`, which is a
+    serveradmin.xml no parser accepts.
+    """
+    _seed(tmp, "client-sg", "client-old")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    marker = f' {sbconfig.SEED_MARKER}="1"'
+    admin.write_text(
+        admin.read_text(encoding="utf-8").replace(
+            f'userid="client-old" name="client-old" permission_level="0"{marker} />',
+            f'userid="client-old" name="client-old"{marker}></user>',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    text = _seed(tmp, "client-sg")
+    ET.fromstring(text)  # raises if the element was only half removed
+    assert "client-old" not in text, text
+    assert "</user>" not in text, text
+    print("PASS seed_revokes_the_paired_form")
+
+
 def test_seed_is_idempotent(tmp: Path) -> None:
     first = _seed(tmp, "client-sg")
     second = _seed(tmp, "client-sg")
@@ -307,6 +377,22 @@ def test_port_block_probes_past_a_taken_block(tmp: Path) -> None:
     assert probed != first
     assert probed == sbconfig.port_block("srv-lab", {first}), "probe is not deterministic"
     print("PASS port_block_probes_past_a_taken_block")
+
+
+def test_port_block_respects_a_claim_inside_the_block(tmp: Path) -> None:
+    """A claim on any port of a block takes the whole block.
+
+    The probe tested only the block's first port, so a claim recorded on a
+    port inside it (a hand-edited instance.env, an older layout) was handed
+    the same block again and two servers ended up on the same ports.
+    """
+    first = sbconfig.port_block("srv-lab", set())
+    assert sbconfig.port_block("srv-lab", {first + 2}) != first
+    assert sbconfig.port_block("srv-lab", {first + 4}) != first
+    # The block after a claimed one is still free, so the probe is not
+    # over-blocking: only the overlapping block is skipped.
+    assert sbconfig.port_block("srv-lab", {first + 2}) == first + 5
+    print("PASS port_block_respects_a_claim_inside_the_block")
 
 
 def test_port_block_exhaustion_fails_instead_of_overlapping(tmp: Path) -> None:
@@ -423,6 +509,23 @@ def test_seed_refuses_names_that_are_not_utf8(tmp: Path) -> None:
     print("PASS seed_refuses_names_that_are_not_utf8")
 
 
+def test_recorded_ports_ignores_a_superseded_declaration(tmp: Path) -> None:
+    """The claim is the port the instance binds, not one a hand-edit dropped.
+
+    `sb env` exports every declaration and the shell's last-one-wins settles
+    it, so a second `SERVER_PORT` line is what a harness connects to. Counting
+    the superseded line as well reserved a block no server was on and took it
+    out of the range for every other instance.
+    """
+    instances = tmp / "instances"
+    (instances / "srv-dup").mkdir(parents=True)
+    (instances / "srv-dup" / "instance.env").write_text(
+        "SERVER_PORT=27100\nSERVER_PORT=27105\n", encoding="utf-8"
+    )
+    assert sbconfig.recorded_ports(instances, exclude="nobody") == {27105}
+    print("PASS recorded_ports_ignores_a_superseded_declaration")
+
+
 def test_get_reads_the_active_value(tmp: Path) -> None:
     """A value that only appears inside a comment is not what the game reads."""
     src = tmp / "in.xml"
@@ -481,8 +584,9 @@ def test_seed_rewrites_a_differently_spelled_admin(tmp: Path) -> None:
         "  </users>\n</adminTools>\n",
         encoding="utf-8",
     )
-    assert _seed_argv(tmp / "userdata", "istanbul") == 0
-    assert _seed_argv(tmp / "userdata", "Café") == 0
+    # One call, carrying the whole declaration: a seed is the instance's
+    # declared set, so a name missing from it is one the instance revoked.
+    assert _seed_argv(tmp / "userdata", "istanbul", "Café") == 0
     root = ET.fromstring(admin.read_text(encoding="utf-8"))
     local = [u for u in root.iter("user") if u.get("platform") == "Local"]
     by_id: dict[str, str | None] = {}
@@ -494,8 +598,7 @@ def test_seed_rewrites_a_differently_spelled_admin(tmp: Path) -> None:
     assert not [u for u in local if u.get("userid", "").startswith("Cafe")], by_id
     # Reseeding the same declaration must not churn the file.
     before = admin.read_bytes()
-    assert _seed_argv(tmp / "userdata", "istanbul") == 0
-    assert _seed_argv(tmp / "userdata", "Café") == 0
+    assert _seed_argv(tmp / "userdata", "istanbul", "Café") == 0
     assert admin.read_bytes() == before, "reseed rewrote an already-correct file"
     print("PASS seed_rewrites_a_differently_spelled_admin")
 
@@ -653,9 +756,11 @@ def test_seed_upserts_paired_user_without_level(tmp: Path) -> None:
     """A paired <user></user> with no permission_level keeps its closing tag."""
     _seed(tmp, "client-sg")
     admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    seeded = 'userid="client-sg" name="client-sg" permission_level="0"'
+    seeded += f' {sbconfig.SEED_MARKER}="1" />'
     admin.write_text(
         admin.read_text(encoding="utf-8").replace(
-            'userid="client-sg" name="client-sg" permission_level="0" />',
+            seeded,
             'userid="client-sg" name="client-sg"></user>',
             1,
         ),
@@ -798,14 +903,19 @@ TESTS = (
     test_seed_reads_names_from_stdin,
     test_seeds_only_declared_names,
     test_seed_upserts_demoted_admin,
+    test_seed_revokes_an_undeclared_name,
+    test_seed_keeps_an_admin_it_did_not_write,
+    test_seed_revokes_the_paired_form,
     test_seed_is_idempotent,
     test_seed_is_idempotent_for_escaped_names,
     test_seed_is_host_independent,
     test_port_block_is_derived_from_the_name,
     test_port_block_probes_past_a_taken_block,
+    test_port_block_respects_a_claim_inside_the_block,
     test_port_block_exhaustion_fails_instead_of_overlapping,
     test_port_block_stays_inside_the_port_space,
     test_recorded_ports_skips_self_and_garbage,
+    test_recorded_ports_ignores_a_superseded_declaration,
     test_seed_admins_is_utf8_under_a_c_locale,
     test_seed_refuses_names_that_are_not_utf8,
     test_get_reads_the_active_value,

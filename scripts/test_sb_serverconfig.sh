@@ -298,6 +298,17 @@ sb render-config srv-demo MaxPlayers=8 >/dev/null
 expect_eq "instance.props stays 0600 when re-declared" \
   "$(stat -c '%a' "$INST/instance.props")" "600"
 
+# A duplicate declaration resolves the same way for the server and for the
+# harness. `sb env` exports every line and the shell's last-one-wins settles
+# it, so binding the first line left the server on one port while every
+# harness connected to another and missed a port nothing listened on.
+printf 'SERVER_PORT=27200\nSERVER_TELNET_PORT=27201\n' >> "$INST/instance.env"
+sb render-config srv-demo GameWorld=Navezgane >/dev/null
+expect_eq "the server binds the declared port" "$(active_value "$cfg" ServerPort)" "27200"
+expect_eq "the harness is told the same port" \
+  "$(bash -c 'eval "$1"; echo "$SERVER_PORT"' _ "$(sb env srv-demo)")" "27200"
+cp "$INST/env.good" "$INST/instance.env"
+
 # --- ports are derived from the name, not from creation order ---------------
 
 first="$(python3 "$SBCONFIG" port-block srv-lab)"

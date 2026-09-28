@@ -85,6 +85,9 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
   declares in `SERVER_ADMINS` (stock auth: PltfmId `Local_<playername>`), plus
   the three fixed names `Player`, `client` and `admin`, which every sandbox
   server admits so a server-only create is usable without a declaration.
+  Dropping a name from `SERVER_ADMINS` and relaunching revokes it: the entries
+  the seeder wrote carry an `sbseed="1"` marker, and an entry without it (one a
+  person or the game added) is never revoked.
 - **No Steam data-file verification.** `fetch-base` runs steamcmd without
   `-validate` (opt-in), and the sandbox refuses to live inside a `steamapps`
   tree, so Steam can never own or verify sandbox files.

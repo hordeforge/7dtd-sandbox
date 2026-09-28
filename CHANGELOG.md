@@ -192,6 +192,29 @@ Nothing is deprecated ahead of removal in this repository today.
   every push failed CI on a tree nobody had changed. It now carries the same
   `#!/usr/bin/env python3` as the other Python gates; the `EXE` rule group
   ruff already ran is what holds the executable bit and the shebang together.
+- A name dropped from `SERVER_ADMINS` kept its `permission_level="0"` entry in
+  `serveradmin.xml` forever. Seeding was an upsert and nothing removed what a
+  declaration no longer listed, so the file was a function of every
+  declaration the instance had ever made rather than the one it makes now: a
+  player removed from the list still held `dm` and `givetools` on every later
+  launch. `seed-admins` now revokes the entries it seeded for an undeclared
+  name. Only entries carrying the new `sbseed="1"` marker are revoked, so an
+  admin a person or the game wrote is never touched, and both the paired and
+  the self-closing `<user>` forms are removed whole.
+- The port the server bound and the port a harness was told could disagree.
+  `instance_server_ports` read the first `SERVER_PORT` line while `env_value`
+  and `sb env` resolve the last, so a hand-edited duplicate made the server
+  listen on one port and every harness connect to another, missing a port
+  nothing was listening on. The bring-up reads through `env_value` now, the
+  one lookup every other reader uses.
+- The port allocator tested only a block's first port, so a claim recorded on
+  a port inside a block (a hand-edited `instance.env`, an older layout) was
+  handed the same block again and two servers landed on the same ports. A
+  block is free when none of the five ports it covers is claimed.
+- `recorded_ports` counted a superseded `SERVER_PORT` line as a claim, so a
+  hand-edited duplicate reserved a block no server was on and took it out of
+  the range for every other instance. The last declaration is the one that
+  instance binds, and the only one counted.
 - `make check` was red on a clean checkout with the ruff CI pins: 45 findings
   across `sbconfig.py` and the two config gates (long lines, percent-format,
   magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a

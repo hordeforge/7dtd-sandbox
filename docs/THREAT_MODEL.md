@@ -140,6 +140,12 @@ Ranked by exploitability on the deployment this repository actually ships
   `scripts/sbconfig.py:51`) mean a server created with no `--admin` still
   admits three well-known names. Deliberate for a lab, fatal on a shared
   network.
+- **Stale authorization (fixed):** seeding was an upsert, so a name removed
+  from `SERVER_ADMINS` kept its `permission_level="0"` entry in
+  `serveradmin.xml` on every later launch. `seed-admins` now revokes the
+  entries it seeded for a name the declaration no longer lists, scoped to the
+  `sbseed="1"` marker it writes, so an entry a person or the game added is
+  not touched.
 - **Denial of service:** the server binds a predictable, name-derived port
   (`scripts/sbconfig.py:222`), so a scan finds every lab instance on the
   network. No rate limit, quota or connection control ships.
