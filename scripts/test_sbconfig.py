@@ -15,7 +15,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import sbconfig  # noqa: E402
+import sbconfig
+
+# sbconfig's exit surface: 0 rendered, 1 a failed render or a missing key,
+# 2 a malformed invocation. Named so a change to it is a change here too.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_USAGE = 2
+
+# The stock template mentions UserDataFolder twice: once commented, once
+# active. A render must leave both and change only the active one.
+USERDATA_MENTIONS_IN_STOCK = 2
 
 # Stock-template shapes: tab padding, a trailing comment, a commented-out
 # UserDataFolder, and one property that appears only inside a comment.
@@ -34,10 +44,8 @@ def active_values(text: str, key: str) -> list[str]:
     """Values of every property `key` that is not inside an XML comment."""
     import re
 
-    pattern = re.compile(r'<property\s+name="%s"\s+value="([^"]*)"' % re.escape(key))
-    return [
-        m.group(1) for m in pattern.finditer(text) if not sbconfig._in_comment(text, m.start())
-    ]
+    pattern = re.compile(rf'<property\s+name="{re.escape(key)}"\s+value="([^"]*)"')
+    return [m.group(1) for m in pattern.finditer(text) if not sbconfig._in_comment(text, m.start())]
 
 
 def render(tmp: Path, *sets: str, src_text: str = STOCK) -> str:
@@ -64,7 +72,7 @@ def test_leaves_commented_property_commented(tmp: Path) -> None:
     out = render(tmp, "UserDataFolder=/srv/userdata")
     assert '<!-- <property name="UserDataFolder"' in out, out
     assert active_values(out, "UserDataFolder") == ["/srv/userdata"], out
-    assert out.count('name="UserDataFolder"') == 2, out
+    assert out.count('name="UserDataFolder"') == USERDATA_MENTIONS_IN_STOCK, out
     print("PASS leaves_commented_property_commented")
 
 
@@ -135,7 +143,7 @@ def test_bad_set_fails_closed(tmp: Path) -> None:
     src = tmp / "in.xml"
     src.write_text(STOCK, encoding="utf-8")
     dst = tmp / "never.xml"
-    assert sbconfig.main(["render", str(src), str(dst), "--set", "NoEquals"]) == 2
+    assert sbconfig.main(["render", str(src), str(dst), "--set", "NoEquals"]) == EXIT_USAGE
     assert not dst.exists(), "a malformed --set still wrote a config"
     print("PASS bad_set_fails_closed")
 

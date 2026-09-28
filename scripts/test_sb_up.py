@@ -18,6 +18,7 @@ Part of ``make test``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -35,6 +36,10 @@ FAKE_SERVER_LIFETIME_SEC = 120
 # The fake binds instantly, so `sb up` should return in well under this. A
 # hung `sb up` is the bug under test, so the wait must be bounded here too.
 UP_CALL_TIMEOUT_SEC = 60
+# A server that never binds must fail inside its own --timeout, with room to
+# spare for a slow runner. A bring-up that waits on the port probe instead of
+# the timeout is the bug this gate exists for.
+NEVER_BINDS_FAILS_BY_SEC = 30
 
 LISTENER = '''#!/usr/bin/env python3
 """Stand-in for 7DaysToDieServer.x86_64: bind the port, then idle."""
@@ -119,10 +124,8 @@ def server_pids(inst: Path) -> list[int]:
 
 def stop(pids: list[int]) -> None:
     for pid in pids:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def free_port() -> int:
@@ -154,18 +157,12 @@ def test_up_returns_and_orphans_the_server(tmp: Path) -> None:
         # session), so the parent's identity is not the assertion; the
         # assertion is that the parent is not an sb still sitting in do_wait.
         for pid in pids:
-            ppid = int(
-                (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8").split()[3]
-            )
+            ppid = int((Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8").split()[3])
             parent_cmd = ""
-            try:
+            with contextlib.suppress(OSError):
                 parent_cmd = (
-                    (Path("/proc") / str(ppid) / "cmdline")
-                    .read_bytes()
-                    .decode("utf-8", "replace")
+                    (Path("/proc") / str(ppid) / "cmdline").read_bytes().decode("utf-8", "replace")
                 )
-            except OSError:
-                pass
             assert "scripts/sb" not in parent_cmd, (
                 f"server {pid} is still a child of sb (pid {ppid}); "
                 "sb up returned only because we killed it, not because it detached"
@@ -200,7 +197,9 @@ def test_up_fails_inside_its_timeout_and_names_the_log(tmp: Path) -> None:
         proc = run_up(tmp, "srv-deaf", timeout="3", never_binds=True, port=port)
         elapsed = time.monotonic() - started
         assert proc.returncode != 0, "a server that never binds must fail the bring-up"
-        assert elapsed < 30, f"the --timeout was not honoured ({elapsed:.0f}s)"
+        assert elapsed < NEVER_BINDS_FAILS_BY_SEC, (
+            f"the --timeout was not honoured ({elapsed:.0f}s)"
+        )
         assert "did not open port" in proc.stderr, proc.stderr
         assert "logs/server.log" in proc.stderr, "the failure must name the log to read"
         pids = server_pids(inst)

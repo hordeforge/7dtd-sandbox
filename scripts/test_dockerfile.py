@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "Dockerfile.safehouse"
 
-FROM_RE = re.compile(r"^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$", re.M | re.I)
+FROM_RE = re.compile(r"^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 def stages() -> dict[str, str]:
@@ -46,9 +46,7 @@ def directives(body: str) -> str:
     the runtime stage documents *why* it has no SANDBOX_STEAMCMD, and prose
     explaining an absence must not read as the thing being present.
     """
-    return "\n".join(
-        line for line in body.splitlines() if not line.lstrip().startswith("#")
-    )
+    return "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
 
 
 def stage_body(name: str) -> str:

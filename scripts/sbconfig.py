@@ -101,9 +101,7 @@ def set_property(text: str, key: str, value: str) -> str:
 
     Inserts the property before </ServerSettings> when no active one exists.
     """
-    pattern = re.compile(
-        r'(<property\s+name="%s"\s+value=")([^"]*)(")' % re.escape(key)
-    )
+    pattern = re.compile(rf'(<property\s+name="{re.escape(key)}"\s+value=")([^"]*)(")')
     escaped = xml_attr(value)
     pieces: list[str] = []
     cursor = 0
@@ -119,23 +117,15 @@ def set_property(text: str, key: str, value: str) -> str:
         pieces.append(text[cursor:])
         return "".join(pieces)
 
-    inserted = '  <property name="%s" value="%s"/>\n%s' % (
-        xml_attr(key),
-        escaped,
-        SETTINGS_CLOSER,
-    )
+    inserted = f'  <property name="{xml_attr(key)}" value="{escaped}"/>\n{SETTINGS_CLOSER}'
     if SETTINGS_CLOSER not in text:
-        raise ValueError(
-            f"no active property {key!r} and no {SETTINGS_CLOSER} to insert before"
-        )
+        raise ValueError(f"no active property {key!r} and no {SETTINGS_CLOSER} to insert before")
     return text.replace(SETTINGS_CLOSER, inserted, 1)
 
 
 def active_value(text: str, key: str) -> str | None:
     """Value of the first property `key` that is not inside an XML comment."""
-    pattern = re.compile(
-        r'<property\s+name="%s"\s+value="([^"]*)"' % re.escape(key)
-    )
+    pattern = re.compile(rf'<property\s+name="{re.escape(key)}"\s+value="([^"]*)"')
     for match in pattern.finditer(text):
         if not _in_comment(text, match.start()):
             # Mirror xml_attr: saxutils only reverses &amp;/&lt;/&gt; unless
@@ -232,8 +222,7 @@ def _user_line(name: str) -> str:
 def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     """Force a level-0 Local entry for `name`. Returns (text, changed)."""
     pattern = re.compile(
-        r'(<user\b(?=[^>]*\bplatform="Local")(?=[^>]*\buserid="%s")[^>]*?/?>)'
-        % re.escape(name),
+        rf'(<user\b(?=[^>]*\bplatform="Local")(?=[^>]*\buserid="{re.escape(name)}")[^>]*?/?>)',
         re.IGNORECASE,
     )
     match = pattern.search(text)
@@ -283,7 +272,7 @@ def seed_admins(out: Path, names: list[str]) -> bool:
 def _restrict(path: Path) -> None:
     """Keep an admin/secret-bearing file user-only rather than the umask's."""
     try:
-        os.chmod(path, 0o600)
+        path.chmod(0o600)
     except OSError as ex:
         print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
 
@@ -296,7 +285,7 @@ def _atomic_write(path: Path, text: str) -> None:
     # the same mode: replacing a 0600 file with a umask-default one would widen
     # it to every local user.
     _restrict(tmp)
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
 def _parse_sets(items: list[str]) -> dict[str, str]:
@@ -375,9 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="resolve and set UserDataFolder to this path",
     )
-    render_cmd.add_argument(
-        "--set", dest="sets", action="append", default=[], metavar="KEY=VALUE"
-    )
+    render_cmd.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE")
     render_cmd.set_defaults(func=cmd_render)
 
     seed_cmd = sub.add_parser("seed-admins", help="upsert declared Local admins")
@@ -400,9 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="instances dir; blocks other instances already recorded are skipped",
     )
-    port_cmd.add_argument(
-        "--taken", type=int, action="append", default=[], metavar="PORT"
-    )
+    port_cmd.add_argument("--taken", type=int, action="append", default=[], metavar="PORT")
     port_cmd.set_defaults(func=cmd_port_block)
 
     get_cmd = sub.add_parser("get", help="read back an active property value")

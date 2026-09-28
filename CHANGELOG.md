@@ -39,6 +39,15 @@ Nothing is deprecated ahead of removal in this repository today.
 - `docs/THREAT_MODEL.md`: entry points, trust boundaries, assets, threats per
   boundary, existing controls, and the mitigation claims the code does not
   implement, each with a file reference.
+- The Python half of the tree is analyzed and formatted. `ruff.toml` selects
+  the correctness rule groups the tree passes, and `make check` runs
+  `ruff check` plus `ruff format --check`; `make format` applies the
+  formatting. `python -m compileall` only ever proved the file parsed.
+- `.shellcheckrc` turns on the optional shellcheck checks that catch defects
+  (an unassigned uppercase, a value assigned in one branch, a glob that
+  cannot expand, a zero step, `rm -rf "$DIR"/` with `DIR` unset) rather than
+  the style preferences the tree does not follow. The tree passed all of them
+  before they were enabled, so they are ratchets, not a backlog.
 
 ### Fixed
 
@@ -86,6 +95,14 @@ Nothing is deprecated ahead of removal in this repository today.
   contract changes, so a minor is not a safe upgrade for a harness pinned to
   behaviour. There is no deprecation schedule and no support window, and the
   `sb` verbs are the public surface.
+
+### Changed
+
+- CI installs a version-pinned ruff through `astral-sh/setup-uv` (pinned to a
+  commit, like the checkout above it) and then runs the same `make check test`
+  contributors run. Both analyzers are now required in CI: `make check` fails
+  rather than skipping when shellcheck or ruff is missing. A test gate's
+  shebang matches its executable bit.
 
 ## [0.3.0] - 2026-09-11
 

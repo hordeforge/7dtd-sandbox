@@ -27,19 +27,33 @@ jobs:
       # would otherwise run unreviewed code here with the workflow token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # ruff, the Python analyzer `make check` requires. Pinned to an exact
+      # version, and to the release commit of the action rather than its
+      # mutable tag, for the same reason the checkout above is: a moved tag
+      # would run unreviewed code in this workflow. It is a tool, not a
+      # dependency of the shipped code: nothing under scripts/ imports it, and
+      # the game images do not carry it.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - name: Install the pinned ruff (the Python analyzer make check requires)
+        run: |
+          uv tool install ruff==0.16.4
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       # Through make, never an inline copy, so CI cannot drift from dev
       # (REPOSITORY_STANDARDS.md section 5). `check` is the static verdict
-      # (bash -n, shellcheck, python compile); `test` adds every
-      # scripts/test_*.sh and scripts/test_*.py.
+      # (bash -n, shellcheck, ruff check, ruff format --check, python
+      # compile); `test` adds every scripts/test_*.sh and
+      # scripts/test_*.py.
       #
       # No game, no Proton and no steamcmd: every gate works against a temp
       # SANDBOX_HOME with fake bases, which is what keeps the instance contract
       # (name-derived ports, declared admins, a serverconfig rebuilt from its
       # base template, a detached `sb up`) testable on a hosted runner at all.
       #
-      # There is no dependency install step and no lockfile: this repository is
-      # bash plus the Python standard library. Adding a dependency means adding
-      # a locked install here in the same change.
+      # There is no dependency install step for the shipped code and no
+      # lockfile: this repository is bash plus the Python standard library.
+      # The one install above is the analyzer, and it is version-pinned here.
+      # Adding a dependency means adding a locked install in the same change.
       - name: Static verdict and gates (make check test)
         run: make check test
 

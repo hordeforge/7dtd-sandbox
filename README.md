@@ -23,6 +23,12 @@ make test              # every gate; no game, no Proton, no steamcmd needed
 ./scripts/sb doctor    # what this machine still needs for a real instance
 ```
 
+`make check` is the static half of that and runs in CI: `bash -n` and
+shellcheck (`.shellcheckrc`) over the shell, `ruff check` and
+`ruff format --check` (`ruff.toml`) over the Python, and `python -m
+compileall`. Shellcheck and ruff are both required rather than skipped when
+CI cannot find them. `make format` applies ruff's formatting.
+
 No coverage badge: `sb` is bash and would need kcov, which CI does not run.
 `make coverage` says so rather than producing a number nothing regenerates.
 

@@ -1,0 +1,59 @@
+# Static analysis for the Python half of this repository. `make check` runs
+# `ruff check` and `ruff format --check`; CI runs `make check`, so a finding
+# here is a red build rather than a line somebody reads one day.
+#
+# Bash is covered by shellcheck (.shellcheckrc). Python was previously covered
+# by `python -m compileall`, which only proves the file parses.
+target-version = "py312"
+
+# The tree's own cap: the longest line in scripts/*.py is 96, so nothing here
+# is reformatted to satisfy a number chosen for the tool.
+line-length = 100
+
+[lint]
+# Correctness and maintenance rules, with the analyzer's own groups rather
+# than hand-written equivalents. Style-only and opinionated groups (D, ANN,
+# COM, T20, CPY, N, A, ARG) stay off: they encode preferences this tree does
+# not follow, and a rule that fires on every line gets ignored.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RET",  # return consistency
+    "PIE",  # misc lints
+    "RUF",  # ruff-specific
+    "S",    # bandit
+    "TID",  # tidy imports
+    "PL",   # pylint
+    "TRY",  # exception handling
+    "PTH",  # pathlib
+    "FURB", # refactor
+    "PERF", # perflint
+    "G",    # logging format
+    "EXE",  # shebang/executable agreement
+    "ISC",  # implicit string concat
+    "ICN",  # import conventions
+    "RSE",  # raise
+    "PT",   # pytest style
+]
+# A message built at the raise site is the point in a two-hundred-line CLI:
+# moving it to a bespoke exception class per case would be noise.
+ignore = [
+    "TRY003",
+]
+
+[lint.per-file-ignores]
+# The gates are plain scripts driven by `make test`, not a pytest suite, and
+# they assert with `assert` and report with `print` because that is how the
+# other gates in scripts/test_*.sh report too. S314 is off here because the
+# XML they parse is what sbconfig.py just rendered into a temp dir, not input
+# from anywhere untrusted.
+"scripts/test_*.py" = ["S101", "T201", "PT", "PLC", "S603", "S607", "S314"]
+
+[format]
+docstring-code-format = false

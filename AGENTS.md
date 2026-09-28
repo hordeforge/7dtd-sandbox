@@ -53,6 +53,8 @@ repo opens a serverconfig, allocates a port, or execs a dedicated server.
 | `scripts/sbconfig.py` | Serverconfig render/get, admin seeding, name-derived port blocks |
 | `scripts/docker-gui.sh` | Containerized client with host X11/GPU forwarding (see the limitation below) |
 | `scripts/test_*.sh`, `scripts/test_*.py` | The gates; `make test` discovers them, no list to update |
+| `.shellcheckrc` | The shell analyzer's configuration: optional checks the tree passes, each with the defect it catches |
+| `ruff.toml` | The Python analyzer and formatter's configuration: rule groups, per-file ignores, the 100-column cap |
 | `base/game`, `base/server-game` | Pristine steamcmd bases; never edited in place |
 | `instances/<name>/` | One instance (gitignored) |
 | `tools/steamcmd/` | The Steam console client (gitignored) |
@@ -345,14 +347,25 @@ client hangs during early Unity init (see README); use the native
     as the bump. `scripts/test_sb_release.sh` holds the same structural rules
     on every push.
 12. **CI runs the same two targets you do.** `.github/workflows/ci.yml` is
-    `make lint` then `make test`, nothing inlined, so a gate added here runs
-    on every push without touching the workflow. Every gate works against a
-    temp `SANDBOX_HOME` with fake bases: no game, no Proton, no steamcmd.
+    `make check` (which is `make lint`) then `make test`, nothing inlined, so
+    a gate added here runs on every push without touching the workflow. Every
+    gate works against a temp `SANDBOX_HOME` with fake bases: no game, no
+    Proton, no steamcmd.
 13. **No Python inside a shell script.** `sb` shells out to
     `scripts/sbconfig.py`; it carries no `python3 - <<EOF` heredoc, and the
     same rule holds in reverse. `make test` runs both gate kinds
-    (`scripts/test_*.sh` and `scripts/test_*.py`) and `make lint` is
-    shellcheck-clean, so neither is optional.
+    (`scripts/test_*.sh` and `scripts/test_*.py`).
+14. **Both languages are analyzed, and the analyzers are pinned.**
+    `make check` runs `bash -n`, shellcheck under `.shellcheckrc`, `ruff check`
+    and `ruff format --check` under `ruff.toml`, and `python -m compileall`.
+    Shellcheck and ruff are both required in CI (the check errors out rather
+    than skipping when either is missing there) and both are named
+    explicitly on the command line, so a stray rc file elsewhere on the
+    machine cannot loosen the gate. CI installs ruff at the version in
+    `.github/workflows/ci.yml`; use that one locally, or `make format` is a
+    diff somebody else has to absorb. A rule the tree does not pass is not
+    enabled: an analyzer that fires on every line gets ignored, which is worse
+    than the defect it was meant to catch.
 
 ## Fetching the bases
 

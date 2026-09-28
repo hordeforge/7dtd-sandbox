@@ -1,0 +1,36 @@
+# ShellCheck configuration for this repository's shell.
+#
+# `make check` runs shellcheck over every scripts/*.sh, `sb` and
+# `scripts/docker-gui.sh`; CI runs `make check`, so a finding here is a red
+# build. The Makefile passes --rcfile explicitly, so a stray rc file in a
+# caller's home cannot loosen the gate.
+#
+# Optional checks are off by default. The ones below are on because they catch
+# defects rather than style, and the tree passes every one of them today: they
+# are ratchets, not a to-do list. What each one catches:
+#
+#   check-unassigned-uppercase         a misspelled variable reading as empty
+#   check-transient-assignment        a value assigned in one branch only
+#   check-typed-arrays                a bracket or quote typo that still parses
+#   check-globs-as-args               a glob that cannot expand as written
+#   check-supercritical-double-quotes "rm -rf $DIR"/ with DIR unset
+#   check-divergence-by-zero          a zero step, or a loop that never ends
+#   check-error-requirement           a command whose failure must abort
+#   check-deprecated-but-severity     a removed check that was load-bearing
+#   check-empty-nullary               `foo ""` where foo takes no argument
+#
+# Deliberately not enabled: check-extra-masked-returns, add-default-case,
+# require-double-brackets and require-variable-braces each fire on the current
+# tree, and each is a preference about how a script should be written rather
+# than a defect it would catch.
+#
+# One directive per line: the rc parser takes a single value per `enable`.
+enable=check-unassigned-uppercase
+enable=check-transient-assignment
+enable=check-typed-arrays
+enable=check-globs-as-args
+enable=check-supercritical-double-quotes
+enable=check-divergence-by-zero
+enable=check-error-requirement
+enable=check-deprecated-but-severity
+enable=check-empty-nullary
