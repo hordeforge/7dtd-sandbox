@@ -10,7 +10,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${SANDBOX_IMAGE:-7dtd-safehouse:latest}"
 STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
-PROTON_REL="steamapps/common/Proton - Experimental/proton"
 
 die() { echo "docker-gui: $*" >&2; exit 1; }
 
@@ -28,10 +27,23 @@ die() { echo "docker-gui: $*" >&2; exit 1; }
 for hostfile in /etc/passwd /etc/group; do
   [[ -r "$hostfile" ]] || die "$hostfile unreadable; the container runs as the host uid and needs it"
 done
-
-[[ -x "$STEAM_ROOT/$PROTON_REL" ]] || die "Proton not found at $STEAM_ROOT/$PROTON_REL"
 command -v docker >/dev/null || die "docker not on PATH"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: docker build --target runtime -t $IMAGE -f Dockerfile.safehouse ."
+
+# The same candidates `sb`'s detect_proton tries, in the same order, so a host
+# whose Proton is 10 or 11 runs the native and the containerized client alike
+# instead of being told Experimental is missing on one path and found on the
+# other.
+PROTON_REL=""
+for rel in \
+  "steamapps/common/Proton - Experimental/proton" \
+  "steamapps/common/Proton 11.0/proton" \
+  "steamapps/common/Proton 10.0/proton"
+do
+  if [[ -x "$STEAM_ROOT/$rel" ]]; then PROTON_REL="$rel"; break; fi
+done
+[[ -n "$PROTON_REL" ]] || die "no Proton under $STEAM_ROOT/steamapps/common (looked for -Experimental, 11.0, 10.0)"
+PROTON_DIR="/opt/steam/${PROTON_REL%/proton}"
 
 # Allow local unix-socket X11 clients (container root talking to the host
 # display). Revoke later with: xhost -local:
@@ -92,13 +104,18 @@ if [[ -n "${XAUTHORITY:-}" && -f "${XAUTHORITY}" ]]; then
   xauth_args+=( -e "XAUTHORITY=/tmp/.docker.xauth" -v "${XAUTHORITY}:/tmp/.docker.xauth:ro" )
 fi
 
+# Unique per invocation. A fixed name refuses the second concurrent GUI
+# instance with "the container name is already in use", which would break the
+# parallel-instance contract everything else here supports.
+container_name="7dtd-safehouse-gui-$$"
+
 # Proton's pressure-vessel (bwrap) fights Docker's own namespaces. Skip it
 # and let Proton's bundled wine talk to the host GPU/X11 directly.
 # Default docker network (no -p) keeps ports unpublished; --network none
 # hung Proton's steam.exe stub before 7DaysToDie.exe started.
 exec docker run --rm \
   "${tty_args[@]}" \
-  --name 7dtd-safehouse-gui \
+  --name "$container_name" \
   --ipc host \
   --security-opt seccomp=unconfined \
   "${user_args[@]}" \
@@ -123,7 +140,7 @@ exec docker run --rm \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$STEAM_ROOT:/opt/steam:ro" \
   -v "$shader_host:/opt/steam/steamapps/shadercache" \
-  -v "$proton_lock_host:/opt/steam/steamapps/common/Proton - Experimental/dist.lock" \
+  -v "$proton_lock_host:$PROTON_DIR/dist.lock" \
   -v "$ROOT:/sandbox" \
   -w /sandbox \
   "$IMAGE" \

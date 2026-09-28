@@ -4,3 +4,8 @@ tools/steamcmd/
 .git/
 *.log
 output_log_live.txt
+# Regenerable and unbounded: the DXVK/Fossilize cache a docker-gui session
+# writes, and python bytecode from a gate run. Neither belongs in the build
+# context, and the cache is the larger of the two.
+.scratch/
+__pycache__/

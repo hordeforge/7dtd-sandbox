@@ -19,7 +19,7 @@ Ranked by exploitability on the deployment this repository actually ships
 | 3 | The Steam account password is passed to `steamcmd.sh` as a command-line argument, so it is world-readable in the process table for the duration of a fetch. | `scripts/sb:303` | Claim contradicted in `SECURITY.md`; corrected there, fix deferred to sec-review |
 | 4 | A serverconfig property value comes from a harness (`render-config KEY=VALUE`) and is XML-escaped, so it cannot inject properties. The base template it is rendered from is a file in the instance tree. | `scripts/sbconfig.py:112` | Escaping in place and gated (`scripts/test_sbconfig.py`) |
 | 5 | `instance.env` is a shell file that callers `source` or `eval`. Every value written into it is shell code. | `scripts/sb:407`, `scripts/sb:622` | Values that are attacker-chosen are now charset-validated |
-| 6 | The docker GUI path grants a container host IPC, an unconfined seccomp profile, the X11 socket, and the repository read-write. | `scripts/docker-gui.sh:79` | Unmitigated; opt-in, developer-invoked only |
+| 6 | The docker GUI path grants a container host IPC, an unconfined seccomp profile, the X11 socket, and the repository read-write. | `scripts/docker-gui.sh:98` | Unmitigated; opt-in, developer-invoked only |
 | 7 | `sb stop`/`destroy` decide which processes to kill by reading `/proc/<pid>/environ`. Any process that sets the matching variable is killed. | `scripts/sb:217` | Scoped to per-instance unique values; a same-user process can still opt in |
 | 8 | Port allocation is name-derived, so an instance name collides with another machine's recorded block only by chance and is resolved by a forward probe. A wrong block sends a harness to a port nothing binds. | `scripts/sbconfig.py:222` | Deterministic probe, exhaustion fails loudly |
 
@@ -43,7 +43,7 @@ Ranked by exploitability on the deployment this repository actually ships
 | `userdata/Saves/serveradmin.xml` | read and rewritten on every launch and wipe | `scripts/sbconfig.py:279` |
 | Modlet directory contents | every file in it reaches the game | `scripts/sb:947` |
 | `/proc/<pid>/environ` | read to find this instance's processes | `scripts/sb:217` |
-| Docker socket / `docker run` | deploy-time surface, host mounts and capabilities | `scripts/docker-gui.sh:79` |
+| Docker socket / `docker run` | deploy-time surface, host mounts and capabilities | `scripts/docker-gui.sh:98` |
 | Game port block, all interfaces | the network listener this repo causes to exist | `scripts/sb:453`, `scripts/sbconfig.py:58` |
 
 ## Trust boundaries

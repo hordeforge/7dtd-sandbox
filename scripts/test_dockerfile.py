@@ -155,6 +155,20 @@ def test_helper_scripts_are_executable_in_the_image() -> None:
     print("PASS helper_scripts_are_executable_in_the_image")
 
 
+def test_build_context_excludes_the_big_trees() -> None:
+    """A 20 GB base, a Proton shader cache and a git object store are not
+    build inputs. Without this, every `make docker` uploads all three to the
+    daemon before the first instruction runs."""
+    patterns = {
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    for required in ("base/", "instances/", ".git/", ".scratch/", "__pycache__/"):
+        assert required in patterns, f".dockerignore does not exclude {required}"
+    print("PASS build_context_excludes_the_big_trees")
+
+
 def test_docker_gui_names_its_host_requirements() -> None:
     """The GUI path binds host paths a non-Linux or GPU-less host lacks.
 
@@ -261,6 +275,7 @@ TESTS = (
     test_both_images_ship_the_config_helper,
     test_no_game_files_are_baked_in,
     test_helper_scripts_are_executable_in_the_image,
+    test_build_context_excludes_the_big_trees,
     test_docker_gui_names_its_host_requirements,
     test_images_carry_oci_labels,
     test_image_version_is_derived_from_sb_version,

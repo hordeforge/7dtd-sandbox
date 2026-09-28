@@ -201,6 +201,20 @@ Nothing is deprecated ahead of removal in this repository today.
 - A port block for an instance name carrying a byte that is not UTF-8 is now
   derived instead of raising. Linux directory names may hold such bytes, and
   `7dtd-loadgen` calls `sbconfig.py port-block` directly.
+- `scripts/test_sb_serverconfig.sh` asserted that `sb render-config` accepts a
+  key holding a `.`, which `validate_prop` refuses, so the gate failed on a
+  clean tree. It now pins the shipped contract: a pattern-shaped key is
+  refused, and the declaration beside it is untouched.
+- `scripts/docker-gui.sh` names its container per invocation. A fixed name
+  refused a second concurrent GUI client with "the container name is already in
+  use", which is the one thing this sandbox otherwise runs in parallel.
+- `.dockerignore` excludes `.scratch/` and `__pycache__/`. The DXVK/Fossilize
+  cache a docker-gui session writes is unbounded and is not a build input, and
+  `make docker` uploaded all of it to the daemon first.
+- `scripts/docker-gui.sh` resolves Proton the way `sb detect_proton` does
+  (-Experimental, 11.0, 10.0) instead of demanding -Experimental, and overlays
+  the writable `dist.lock` on whichever Proton it found. A host on Proton 10 or
+  11 could run the native client and was refused on the containerized path.
 
 ### Documentation
 
