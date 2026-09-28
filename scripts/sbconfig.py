@@ -278,8 +278,14 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
             continue
         for line in text.splitlines():
             key, sep, value = line.partition("=")
-            if sep and key.strip() == "SERVER_PORT" and value.strip().isdigit():
-                taken.add(int(value.strip()))
+            # isascii() before isdigit(): a str of Unicode decimal digits is a
+            # digit string to Python but not one to int() when it holds a
+            # superscript, so `SERVER_PORT=27²` raised ValueError out of a scan
+            # that exists to be tolerant of another instance's file. ASCII
+            # digits are the only ones this declares.
+            port = value.strip()
+            if sep and key.strip() == "SERVER_PORT" and port.isascii() and port.isdigit():
+                taken.add(int(port))
     return taken
 
 
@@ -300,6 +306,29 @@ def port_block(name: str, taken: set[int]) -> int:
         f"no free port block for {name!r}: all {PORT_BLOCK_COUNT} blocks from "
         f"{PORT_BLOCK_BASE} are recorded by other instances"
     )
+
+
+def _use_utf8_stdio() -> None:
+    """Read and write this process's own text as UTF-8, whatever the locale says.
+
+    The admin names arrive on stdin and the port, the value and the messages go
+    out on stdout/stderr, so the host locale decides the encoding of both. Under
+    `LC_ALL=C` (a cron job, a systemd unit, a CI runner) stdin decodes as ASCII
+    with surrogateescape, so `José` arrives as lone surrogates and is written to
+    serveradmin.xml as a name no player can ever match; stdout then refuses to
+    encode it at all. Every byte crossing this process is UTF-8, the same
+    encoding as every file it reads and writes.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            # A test harness swapping in a StringIO owns its own encoding; a
+            # str has no bytes to re-decode.
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="strict")
+        except (AttributeError, ValueError, OSError):
+            continue
 
 
 def _user_line(name: str) -> str:
@@ -399,8 +428,11 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     users_block = "\n".join(_user_line(n) for n in names)
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file():
-        out.write_text(ADMIN_TEMPLATE.format(users=users_block), encoding="utf-8", newline="")
-        _restrict(out)
+        # temp+replace like every other write here, so a name the encoder
+        # refuses cannot leave a truncated serveradmin.xml behind: a plain
+        # write_text that raises mid-way leaves the empty file a reader sees as
+        # an admin list granting nobody.
+        _atomic_write(out, ADMIN_TEMPLATE.format(users=users_block))
         return True
 
     try:
@@ -522,7 +554,20 @@ def declared_admin_names(text: str) -> list[str]:
 
 
 def cmd_seed_admins(args: argparse.Namespace) -> int:
-    names = list(dict.fromkeys([*declared_admin_names(sys.stdin.read()), *DEFAULT_ADMIN_NAMES]))
+    try:
+        declared = declared_admin_names(sys.stdin.read())
+    except UnicodeDecodeError as ex:
+        # The caller piped UTF-8 names and this process is not decoding them
+        # that way. Admitting the first N names that happened to be ASCII would
+        # seed an admin list that is quietly missing the rest, so none of it is
+        # written.
+        print(
+            f"ERROR: admin names on stdin are not valid UTF-8 ({ex}); "
+            "pipe UTF-8, one name per line",
+            file=sys.stderr,
+        )
+        return 1
+    names = list(dict.fromkeys([*declared, *DEFAULT_ADMIN_NAMES]))
     try:
         changed = seed_admins(args.userdata / "Saves" / "serveradmin.xml", names)
     except (OSError, RuntimeError, ValueError) as ex:
@@ -566,6 +611,7 @@ def cmd_port_block(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _use_utf8_stdio()
     if sys.version_info < MIN_PYTHON:
         floor = ".".join(str(part) for part in MIN_PYTHON)
         running = ".".join(str(part) for part in sys.version_info[:2])

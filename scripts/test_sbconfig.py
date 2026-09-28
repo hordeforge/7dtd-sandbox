@@ -329,6 +329,10 @@ def test_recorded_ports_skips_self_and_garbage(tmp: Path) -> None:
         ("srv-self", "SERVER_PORT=27100\n"),
         ("srv-other", "SERVER_PORT=27105\n"),
         ("srv-bad", "SERVER_PORT=not-a-number\n"),
+        # Unicode digits: `isdigit()` accepts a superscript, which int() then
+        # refuses, so this used to raise ValueError out of the scan that exists
+        # to survive another instance's file.
+        ("srv-unicode", "SERVER_PORT=27\u00b2\n"),
         ("client-x", "SANDBOX_NAME=client-x\n"),
     ):
         (instances / name).mkdir(parents=True)
@@ -336,6 +340,54 @@ def test_recorded_ports_skips_self_and_garbage(tmp: Path) -> None:
     taken = sbconfig.recorded_ports(instances, exclude="srv-self")
     assert taken == {27105}, taken
     print("PASS recorded_ports_skips_self_and_garbage")
+
+
+def test_seed_admins_is_utf8_under_a_c_locale(tmp: Path) -> None:
+    """The names on stdin are UTF-8 whatever the host locale says.
+
+    A cron job, a systemd unit and a CI runner all run under LC_ALL=C, where
+    Python decodes stdin as ASCII: `José` arrived as lone surrogates, was
+    written into serveradmin.xml as a name no player can match, and left a
+    truncated admin file behind. Coercion and UTF-8 mode are switched off so
+    the locale really is ASCII here rather than rescued by the interpreter.
+    """
+    import os
+    import subprocess
+
+    env = dict(os.environ, LC_ALL="C", PYTHONCOERCECLOCALE="0", PYTHONUTF8="0")
+    proc = subprocess.run(
+        [sys.executable, str(Path(sbconfig.__file__)), "seed-admins", str(tmp / "userdata")],
+        input="José\n".encode(),
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    seeded = (tmp / "userdata" / "Saves" / "serveradmin.xml").read_bytes()
+    ids = {u.get("userid") for u in ET.fromstring(seeded.decode("utf-8")).iter("user")}
+    assert "José" in ids, ids
+    assert b"\xef\xbf\xbd" not in seeded, "the name was written with replacement characters"
+    print("PASS seed_admins_is_utf8_under_a_c_locale")
+
+
+def test_seed_refuses_names_that_are_not_utf8(tmp: Path) -> None:
+    """Undecodable names are reported, never seeded as a truncated list.
+
+    Seeding the names that happened to decode would admit a different set of
+    players than the caller declared, quietly.
+    """
+    saved = sys.stdin
+    try:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(b"good\n\xff\xfe\n"), encoding="ascii")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = sbconfig.main(["seed-admins", str(tmp / "userdata")])
+    finally:
+        sys.stdin = saved
+    assert rc == EXIT_FAILED, f"expected a refusal ({EXIT_FAILED}), got {rc}"
+    assert "UTF-8" in err.getvalue(), err.getvalue()
+    seeded = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    assert not seeded.exists(), "a refused seed wrote a file"
+    print("PASS seed_refuses_names_that_are_not_utf8")
 
 
 def test_get_reads_the_active_value(tmp: Path) -> None:
@@ -590,6 +642,8 @@ TESTS = (
     test_port_block_probes_past_a_taken_block,
     test_port_block_exhaustion_fails_instead_of_overlapping,
     test_recorded_ports_skips_self_and_garbage,
+    test_seed_admins_is_utf8_under_a_c_locale,
+    test_seed_refuses_names_that_are_not_utf8,
     test_get_reads_the_active_value,
     test_get_unescapes_what_render_escaped,
     test_seed_rewrites_malformed_admin_file,

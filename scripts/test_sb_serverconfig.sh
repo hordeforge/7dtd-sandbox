@@ -155,6 +155,20 @@ sb render-config srv-demo "$(printf 'GameWorld=two\nlines')" >/dev/null 2>&1 || 
 expect_eq "value spanning lines is refused"    "$rc" "2"
 expect_eq "refused value left the declaration" "$(active_value "$cfg" GameWorld)" "dotted"
 
+# The rendered config is UTF-8 XML and the renderer decodes strictly, so a
+# value carrying a byte that is not UTF-8 is recorded now and refused at every
+# later render: the instance keeps a declaration it can never apply. Refused
+# where the caller can still see the key.
+rc=0
+sb render-config srv-demo "$(printf 'GameWorld=bad\xffbyte')" >/dev/null 2>&1 || rc=$?
+expect_eq "value that is not UTF-8 is refused" "$rc" "2"
+expect_eq "refused value left the declaration" "$(active_value "$cfg" GameWorld)" "dotted"
+# UTF-8 itself is fine, in a composed and in a decomposed spelling: what the
+# value is, not how many bytes it takes.
+sb render-config srv-demo GameWorld=Préyège >/dev/null
+expect_eq "a UTF-8 value round-trips" "$(active_value "$cfg" GameWorld)" "Préyège"
+sb render-config srv-demo GameWorld=dotted >/dev/null
+
 # --- the instance owns its ports and userdata; a caller may not declare them -
 
 for owned in ServerPort TelnetPort UserDataFolder; do

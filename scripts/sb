@@ -697,8 +697,9 @@ INSTANCE_OWNED_PROPS="ServerPort TelnetPort UserDataFolder"
 # properties [A-Za-z_][A-Za-z0-9_]*; anything else is a name the game never
 # reads, and a key carrying a regex metacharacter also breaks the upsert that
 # rewrites instance.props. A value with a line break would inject a second
-# declaration, so it is refused at the point it is written rather than at the
-# next launch, when the reason is a file and a line number nobody remembers.
+# declaration, and a value that is not UTF-8 cannot be written into the rendered
+# config at all, so both are refused at the point it is written rather than at
+# the next launch, when the reason is a file and a line number nobody remembers.
 validate_prop() { # validate_prop <KEY=VALUE> [where]
   local kv="$1" where="${2:-bad property}" key value
   [[ "$kv" == *=* ]] || usage_err "$where: '$kv' is not KEY=VALUE"
@@ -709,6 +710,17 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
   case "$value" in
     *$'\n'*|*$'\r'*) usage_err "$where: the value of '$key' spans a line break; a declaration is one line" ;;
   esac
+  # The value is written into instance.props, read back here, and rendered into
+  # a UTF-8 XML attribute. A byte that is not valid UTF-8 survives all of that
+  # until the renderer encodes the file, so the declaration would be recorded
+  # now and refused at every later render, leaving an instance that cannot apply
+  # its own declared state. Refused where the caller can still see the key.
+  # iconv is in the runtime image; without it the value is accepted and the
+  # render names it, as before.
+  if command -v iconv >/dev/null 2>&1; then
+    printf '%s' "$value" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+      || usage_err "$where: the value of '$key' is not valid UTF-8"
+  fi
 }
 
 # The instance's port block, read from its own declaration. Both keys must be

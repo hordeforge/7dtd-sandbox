@@ -75,8 +75,8 @@ request. No game, no Proton, no steamcmd.
 
 | Gate | Pins |
 |---|---|
-| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); a value XML cannot carry is refused, not written; commented template lines stay commented and a commented `</ServerSettings>` is not an insert anchor; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, in either the paired or the self-closing `<user>` form; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name; `seed-admins` reads its names from stdin and refuses the `--name` spelling |
-| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key outside `[A-Za-z_][A-Za-z0-9_]*` is refused rather than recorded, and a legal key is upserted as a literal, so none can reach the upsert as a pattern; a value spanning lines is refused |
+| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); a value XML cannot carry is refused, not written; commented template lines stay commented and a commented `</ServerSettings>` is not an insert anchor; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, in either the paired or the self-closing `<user>` form; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name; `seed-admins` reads its names from stdin as UTF-8 whatever the host locale says (a `José` piped under `LC_ALL=C` is seeded as itself, and a name that is not UTF-8 is refused with nothing written) and refuses the `--name` spelling; the port scan survives an `instance.env` whose `SERVER_PORT` is Unicode digits rather than ASCII ones |
+| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key outside `[A-Za-z_][A-Za-z0-9_]*` is refused rather than recorded, and a legal key is upserted as a literal, so none can reach the upsert as a pattern; a value spanning lines is refused, and so is one that is not valid UTF-8, while a UTF-8 value round-trips into the config |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite; `instance.env`, which carries the same names, is restricted on the same path; no admin name is passed in argv |
 | `scripts/test_sb_copy.sh` | A copy that fails part-way costs the caller nothing: a failed `sb wipe` and a failed re-stage leave the instance tree and the modlet they were replacing intact, leave no staging or replaced-tree debris, and report `cp`'s own reason. Every replacing copy is staged and published by rename, because deleting the old tree first lost it whenever the rebuild failed |
@@ -194,7 +194,17 @@ Every property below is gated:
    instead of being rewritten with U+FFFD where the bad bytes were, which
    turns one hand-edit into a name no player can ever match on the next
    launch. A read that never writes back (`recorded_ports`, which wants only
-   digits) stays tolerant on purpose.
+   digits) stays tolerant on purpose, and only ASCII digits count as a port:
+   `isdigit()` accepts a superscript that `int()` then refuses, which raised
+   out of a scan that exists to survive another instance's file.
+
+   The same holds for the process's own streams: `seed-admins` decodes its
+   stdin as UTF-8 explicitly rather than from the locale, so a `José` piped
+   under `LC_ALL=C` (a cron job, a systemd unit, a CI runner) is the same name
+   it is everywhere else instead of a surrogate that matches no player, and
+   names that are not UTF-8 are refused with nothing written. `sb render-config`
+   refuses a value that is not valid UTF-8 where it is written, rather than
+   recording a declaration the renderer would refuse at every later launch.
 
 `sb wipe` clears `instance.props` with the rest of the state: a wiped instance
 is the base template again, not the last suite's world.
