@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fuzz gate for the two untrusted-input parsers in scripts/sbconfig.py.
 
 Both read text this repository does not control: the serverconfig template
@@ -48,6 +47,20 @@ MAX_DOC_CHARS = 4000
 MAX_FRAGMENTS = 24
 MAX_RUN_CHARS = 400
 
+# The generator's shape rolls and probabilities. Named so a document shape
+# read off a finding is a constant in this file, not a literal in a branch.
+P_MUTATE = 0.5
+P_STOCK = 0.25
+P_CLOSE_TAGS = 0.9
+P_SELF_CLOSING = 0.5
+
+CONFIG_COMMENTED = 2
+ADMIN_WHITELIST = 2
+ADMIN_NOISE = 3
+ADMIN_TRUNCATED_USER = 4
+MUTATE_INSERT = 2
+MUTATE_DELETE = 3
+
 SERVERCONFIG_KEYS = (
     "ServerPort",
     "TelnetPort",
@@ -65,7 +78,8 @@ ADMIN_NAMES = ("client-sg", "Player", "admin", "srv-1.2_x")
 
 # Values a caller can actually declare: XML metacharacters, a null byte, a
 # newline, a lone surrogate escape, and the plain text around them.
-HOSTILE_VALUE_CHARS = (*tuple("\"'<>&;\n\t\x00\r"), "\u00e9", "\u4e2d", "\U0001f600")
+NON_ASCII_VALUE_CHARS = ("\u00e9", "\u4e2d", "\U0001f600")
+HOSTILE_VALUE_CHARS = (*tuple("\"'<>&;\n\t\x00\r"), *NON_ASCII_VALUE_CHARS)
 
 # Seed corpus: the stock dedicated serverconfig shapes (`sb` renders from this
 # file, so its comments and tab padding are what the renderer really meets).
@@ -109,7 +123,7 @@ def _serverconfig_fragment(rng: random.Random) -> str:
         return f'\t<property name="{key}"\tvalue="{value}"/>'
     if shape == 1:
         return f'\t<property name="{key}" value="{value}"/>\t\t<!-- note -->'
-    if shape == 2:
+    if shape == CONFIG_COMMENTED:
         return f'\t<!-- <property name="{key}" value="{value}"/> -->'
     return f'\t<property name="{key}" value="{value}" />'
 
@@ -117,16 +131,17 @@ def _serverconfig_fragment(rng: random.Random) -> str:
 def _user_fragment(rng: random.Random, name: str) -> str:
     platform = rng.choice(("Local", "Local", "Steam", "EOS"))
     level = rng.choice(("0", "0", "1000", ""))
+    spelled = rng.choice((name, "Player", "steamer"))
     attrs = [
         f'platform="{platform}"',
         f'userid="{name}"',
-        f'name="{rng.choice((name, "Player", "steamer"))}"',
+        f'name="{spelled}"',
     ]
     if level:
         attrs.append(f'permission_level="{level}"')
     rng.shuffle(attrs)
     body = " ".join(attrs)
-    if rng.random() < 0.5:
+    if rng.random() < P_SELF_CLOSING:
         return f"    <user {body} />"
     return f"    <user {body}></user>"
 
@@ -137,11 +152,11 @@ def _serveradmin_fragment(rng: random.Random, names: list[str]) -> str:
         return "\n".join(_user_fragment(rng, rng.choice(names)) for _ in range(rng.randrange(1, 5)))
     if roll == 1:
         return "  </users>"
-    if roll == 2:
+    if roll == ADMIN_WHITELIST:
         return "  <whitelist>\n  </whitelist>"
-    if roll == 3:
+    if roll == ADMIN_NOISE:
         return "\n" + rng.choice(("x" * rng.randrange(1, MAX_RUN_CHARS), "\t", "\n", "<!-- c -->"))
-    if roll == 4:
+    if roll == ADMIN_TRUNCATED_USER:
         return f'  <user platform="Local" userid="{rng.choice(names)}" name="x">oops'
     return rng.choice(('<?xml version="1.0"?>', "<adminTools>", "</adminTools>", ""))
 
@@ -158,9 +173,9 @@ def _mutate(rng: random.Random, text: str) -> str:
             chars[at] = rng.choice(HOSTILE_VALUE_CHARS)
         elif roll == 1:
             chars[at] = ""
-        elif roll == 2:
+        elif roll == MUTATE_INSERT:
             chars.insert(at, rng.choice(HOSTILE_VALUE_CHARS))
-        elif roll == 3:
+        elif roll == MUTATE_DELETE:
             del chars[at : at + rng.randrange(1, 8)]
         else:
             chars[at : at + 1] = list(rng.choice(("<!--", "-->", ">", "<user ", "</users>", '"')))
@@ -168,29 +183,28 @@ def _mutate(rng: random.Random, text: str) -> str:
 
 
 def _serverconfig_input(rng: random.Random) -> str:
-    if rng.random() < 0.25:
+    if rng.random() < P_STOCK:
         body = STOCK_SERVERCONFIG
     else:
         parts = [_serverconfig_fragment(rng) for _ in range(rng.randrange(1, MAX_FRAGMENTS))]
-        if rng.random() < 0.9:
+        if rng.random() < P_CLOSE_TAGS:
             parts.insert(rng.randrange(len(parts) + 1), "</ServerSettings>")
-        body = f'<?xml version="1.0"?>\n<ServerSettings>\n{"\n".join(parts)}\n</ServerSettings>\n'
-    return body if rng.random() < 0.5 else _mutate(rng, body)
+        joined = "\n".join(parts)
+        body = f'<?xml version="1.0"?>\n<ServerSettings>\n{joined}\n</ServerSettings>\n'
+    return body if rng.random() < P_MUTATE else _mutate(rng, body)
 
 
 def _serveradmin_input(rng: random.Random, names: list[str]) -> str:
-    if rng.random() < 0.25:
+    if rng.random() < P_STOCK:
         body = STOCK_SERVERADMIN
     else:
         parts = [_serveradmin_fragment(rng, names) for _ in range(rng.randrange(1, MAX_FRAGMENTS))]
-        if rng.random() < 0.9 and not any(p.strip() == "</users>" for p in parts):
+        if rng.random() < P_CLOSE_TAGS and not any(p.strip() == "</users>" for p in parts):
             parts.append("  </users>")
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>'
-            + "\n".join(parts)
-            + "\n  </users>\n</adminTools>\n"
-        )
-    return body if rng.random() < 0.5 else _mutate(rng, body)
+        head = '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>'
+        joined = "\n".join(parts)
+        body = f"{head}{joined}\n  </users>\n</adminTools>\n"
+    return body if rng.random() < P_MUTATE else _mutate(rng, body)
 
 
 def _shrink(rng: random.Random, failure, reproduce):

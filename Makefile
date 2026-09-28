@@ -59,6 +59,7 @@ help:
 	@echo "Safehouse: isolated, Steam-free 7DTD client and dedicated instances."
 	@echo
 	@echo "  make check    full static verdict (bash -n, shellcheck, ruff check, ruff format)"
+	@echo "                shellcheck and ruff must be on PATH; without one it warns and CI fails"
 	@echo "  make format   apply ruff's formatting to scripts/*.py"
 	@echo "  make test     check + every scripts/test_*.{sh,py}; no game needed"
 	@echo "  make coverage not available here (see the target for why)"
@@ -110,7 +111,9 @@ lint: check-analyzer-versions
 		echo "ERROR: CI requires shellcheck; e.g. pacman -S shellcheck" >&2; \
 		exit 1; \
 	else \
-		echo "note: shellcheck not installed; skipped shell linting"; \
+		echo "WARNING: shellcheck is not on PATH, so the shell half of this gate did not run." >&2; \
+		echo "         install it (pacman -S shellcheck, apt install shellcheck," >&2; \
+		echo "         brew install shellcheck); CI refuses to run without it." >&2; \
 	fi
 	@if command -v ruff >/dev/null 2>&1; then \
 		ruff check --config $(RUFF_TOML) $(PYSRC) && \
@@ -119,7 +122,8 @@ lint: check-analyzer-versions
 		echo "ERROR: CI requires ruff; e.g. uv tool install ruff" >&2; \
 		exit 1; \
 	else \
-		echo "note: ruff not installed; skipped python linting"; \
+		echo "WARNING: ruff is not on PATH, so the Python half of this gate did not run." >&2; \
+		echo "         install the version CI pins: uv tool install ruff==0.16.4" >&2; \
 	fi
 	python3 -m compileall -q $(PYSRC)
 

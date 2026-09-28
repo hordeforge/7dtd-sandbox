@@ -74,6 +74,15 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- `make check` was red on a clean checkout with the ruff CI pins: 45 findings
+  across `sbconfig.py` and the two config gates (long lines, percent-format,
+  magic values in the fuzzer's shape rolls, a stale `noqa`, a shebang on a
+  gate `make test` runs through `python3`). Fixed in the code rather than in
+  `ruff.toml`, so the analyzer a new contributor runs is the one CI runs.
+- `make check` said nothing useful when shellcheck or ruff was missing locally:
+  a `note:` line naming neither what did not run nor how to get the tool. It
+  now prints a warning per missing tool, the install line, and the fact that
+  CI refuses to run without it, so a half-run check cannot read as a green one.
 - `sbconfig.py seed-admins` takes the declared Local admin names on stdin, one
   per line, instead of as `--name` arguments. An argument is readable through
   `/proc/<pid>/cmdline` by every account on the host for as long as the process
