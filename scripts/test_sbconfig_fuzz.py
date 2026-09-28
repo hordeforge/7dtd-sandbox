@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Fuzz gate for the two untrusted-input parsers in scripts/sbconfig.py.
+"""Fuzz gate for the three untrusted-input parsers in scripts/sbconfig.py.
 
-Both read text this repository does not control: the serverconfig template
-shipped by the dedicated depot and a serveradmin.xml that a previous run, a
-world, or the game itself left in an instance's userdata. Both are rewritten
-with regexes (`set_property` / `active_value` / `_upsert_user`) and the admin
-file is a persistence boundary, so a malformed input is not a stack trace, it
-is a config the server then reads.
+Two read text this repository does not control and rewrite in place: the
+serverconfig template shipped by the dedicated depot and a serveradmin.xml that
+a previous run, a world, or the game itself left in an instance's userdata.
+Both are rewritten with regexes (`set_property` / `active_value` /
+`_upsert_user`) and the admin file is a persistence boundary, so a malformed
+input is not a stack trace, it is a config the server then reads.
+
+The third reads the *other* instances' `instance.env` files while allocating a
+port block (`recorded_ports` / `port_block`). Those are the least controlled
+input in the tree: a hand edit, another uid's file, or a truncated write on a
+machine running several harnesses at once, all read during an unrelated `sb
+create`.
 
 Structure-aware generation over a stock-shaped seed corpus, then byte-level
 mutation of the result. Every iteration asserts the invariants a fuzzer alone
 cannot see: the write/read round trip, XML well-formedness, 0600 mode, the
-declared admins, and idempotence. Deterministic (seeded) so a failure
-reproduces from the printed seed and iteration; `--iters`/`--seed` widen a run.
+declared admins, idempotence, and a port block that is in range, unrecorded and
+reproducible. Deterministic (seeded) so a failure reproduces from the printed
+seed and iteration; `--iters`/`--seed` widen a run.
 
 No third-party fuzzer: this repository's Python is stdlib only, so the harness
 is a seeded generator rather than coverage-guided.
@@ -28,8 +35,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, NamedTuple, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -80,6 +88,20 @@ ADMIN_NOISE = 3
 ADMIN_TRUNCATED_USER = 4
 MUTATE_INSERT = 2
 MUTATE_DELETE = 3
+
+# The instances tree the port scan walks: how many directories, and how often a
+# directory holds an instance.env that is not a plain file or a plain line. The
+# three shape rolls are cumulative thresholds off one draw, not independent
+# probabilities.
+PORT_MAX_INSTANCES = 6
+P_PORT_VALID = 0.45
+P_PORT_LONG = 0.65
+P_PORT_SHAPE = 0.2
+P_PORT_FS_SHAPE = 0.15
+
+# A port-scan document is a rendering, not the file: a 5000-digit run is a few
+# thousand characters nobody reads in a report, so it is shortened there.
+PORT_RUN_CHARS = 40
 
 SERVERCONFIG_KEYS = (
     "ServerPort",
@@ -227,6 +249,229 @@ def _serveradmin_input(rng: random.Random, names: list[str]) -> str:
     return body if rng.random() < P_MUTATE else _mutate(rng, body)
 
 
+# Instance names a `sb create` can be handed, and directories already under
+# `instances/`. The lone surrogate is one the filesystem accepts and fnv1a has
+# to hash over the bytes it came from; the long one is a path a caller can
+# really create. The excluded name is the one being created, which the scan has
+# to skip so an instance never blocks itself.
+PORT_NAMES = (
+    "srv-lab",
+    "srv-self",
+    "client-x",
+    "José",
+    "istanbul",
+    "a" * 200,
+    "srv-\udcff",
+    "with space",
+    "-dash",
+)
+
+# One `SERVER_PORT` line, and whether the scan records the port written into
+# it. The flag is the generator's own expectation, so the check asserts
+# against what it built rather than re-parsing the file back into a verdict.
+#
+# A comment is not special to this scan: it splits on `=`, so only a line whose
+# key is exactly SERVER_PORT counts, and read_text's universal newlines turn a
+# bare CR into the line ending it already behaves like. What bites the value is
+# a superscript (a digit to isdigit(), not one to int()), a NUL (not whitespace,
+# so strip() leaves it) and anything past five digits.
+_PORT_LINES: tuple[tuple[str, bool], ...] = (
+    ("SERVER_PORT={p}\n", True),
+    ("SERVER_PORT={p}\r\n", True),
+    (" SERVER_PORT = {p} \n", True),
+    ("SERVER_ADMINS=alice\nSERVER_PORT={p}\n", True),
+    ("SERVER_PORT={p}\nSERVER_TELNET_PORT={q}\n", True),
+    ("SERVER_PORT={p}\nSERVER_PORT={p}\n", True),
+    # U+00A0 is whitespace to str.strip(), so the value still declares a port.
+    ("SERVER_PORT={p} \u00a0\n", True),
+    ("SERVER_PORT={p}\u0000\n", False),
+    ("SERVER_PORT={p}\u0001\n", False),
+    ("# SERVER_PORT={p}\n", False),
+    ("PORT_SERVER={p}\n", False),
+    ("SERVERPORT={p}\n", False),
+    ("SERVER_PORT=\n", False),
+    ("SERVER_PORT\n", False),
+    ("SERVER_PORT=-{p}\n", False),
+    ("SERVER_PORT=+{p}\n", False),
+    ("SERVER_PORT=0x{p}\n", False),
+    ("SERVER_PORT=27\u00b2\n", False),
+)
+
+# An instance.env is a text file on a shared machine, so the bytes are ones a
+# hand edit, another uid or a truncated write leaves behind. Written as bytes,
+# not str, so the read path really meets a decode error. The scan decodes with
+# errors="replace" and splits on universal newlines, so the last one holds two
+# SERVER_PORT lines; the later one supersedes the earlier, which is no claim.
+_PORT_RAW_LINES: tuple[tuple[bytes, frozenset[int]], ...] = (
+    (b"SERVER_PORT=27105\xff\xfe\n", frozenset()),
+    (b"SERVER_PORT=\xc3\xa9\n", frozenset()),
+    (b"SERVER_PORT=27110\x00\n", frozenset()),
+    (b"\xef\xbb\xbfSERVER_PORT=27115\n", frozenset()),
+    (b"SERVER_PORT=27120\rSERVER_PORT=27125\n", frozenset({27125})),
+)
+
+# What else a directory under `instances/` holds besides the file the scan
+# reads: a name that is a directory, and a link to a file nobody wrote.
+PORT_FS_SHAPES = ("dir", "dangling")
+
+
+class EnvEntry(NamedTuple):
+    """One directory under `instances/`, and the ports the scan must take from it."""
+
+    directory: str
+    body: str | bytes
+    shape: str
+    records: frozenset[int]
+
+
+def _port_run(rng: random.Random) -> tuple[str, bool]:
+    """A value, and whether it is a port the scan declares.
+
+    The digit-run lengths are the boundary this pins: a run of PORT_MAX_DIGITS
+    is still a port, and one past CPython's own 4300-digit str-to-int cap is
+    not, so an unbounded run used to escape the scan as a ValueError.
+    """
+    roll = rng.random()
+    if roll < P_PORT_VALID:
+        slot = rng.randrange(0, sbconfig.PORT_BLOCK_COUNT)
+        port = sbconfig.PORT_BLOCK_BASE + slot * sbconfig.PORT_BLOCK_SIZE
+        return str(port), True
+    if roll < P_PORT_LONG:
+        return "9" * (sbconfig.PORT_MAX_DIGITS * rng.randrange(2, 1001)), False
+    return str(rng.randrange(0, sbconfig.PORT_BLOCK_BASE + 999)), True
+
+
+def _instance_fragment(rng: random.Random, name: str) -> EnvEntry:
+    """One instance directory, named by the caller so no two entries collide.
+
+    Two entries under one name would mean the second overwrites the first, and
+    the check would then be asserting against a file that no longer exists.
+    """
+    if rng.random() < P_PORT_FS_SHAPE:
+        return EnvEntry(name, "", rng.choice(PORT_FS_SHAPES), frozenset())
+    if rng.random() < P_PORT_SHAPE:
+        raw, records = rng.choice(_PORT_RAW_LINES)
+        return EnvEntry(name, raw, "file", records)
+    port, records = _port_run(rng)
+    template, template_records = rng.choice(_PORT_LINES)
+    # q is a neighbouring declaration, not part of the expectation: keep it a
+    # plain port, so formatting a 5000-digit run cannot overflow int() here.
+    body = template.format(p=port, q=sbconfig.PORT_BLOCK_BASE)
+    return EnvEntry(
+        name,
+        body,
+        "file",
+        frozenset({int(port)}) if records and template_records else frozenset(),
+    )
+
+
+def _render_entries(entries: list[EnvEntry]) -> str:
+    lines = []
+    for entry in entries:
+        if entry.shape != "file":
+            lines.append(f"{entry.directory}/ instance.env is a {entry.shape}")
+        else:
+            body = entry.body
+            if isinstance(body, str) and len(body) > PORT_RUN_CHARS:
+                body = body[:PORT_RUN_CHARS] + f"... ({len(body)} chars)"
+            lines.append(f"{entry.directory}/ instance.env = {body!r}")
+    return "\n".join(lines)
+
+
+def portscan_case(rng: random.Random) -> tuple[str, tuple[object, ...]]:
+    exclude = rng.choice(PORT_NAMES)
+    # PORT_NAMES walked once per lap, so every directory in the tree is its own
+    # entry and the excluded name can be one of them.
+    count = rng.randrange(1, PORT_MAX_INSTANCES)
+    names = [f"{PORT_NAMES[i % len(PORT_NAMES)]}-{i}" for i in range(count)]
+    rng.shuffle(names)
+    entries = [_instance_fragment(rng, name) for name in names]
+    expected = frozenset().union(*(e.records for e in entries)) if entries else frozenset()
+    return _render_entries(entries), (entries, exclude, expected)
+
+
+def check_portscan(doc: str, payload: tuple[object, ...], tmp: Path) -> None:
+    """`recorded_ports` reads other instances' instance.env, none of them ours.
+
+    That file is hand-editable, shared with other uids, and read while an
+    unrelated `sb create` allocates a port, so the scan owes the caller the
+    same thing the seed owes a serveradmin.xml: never raise, and report a port
+    only when the file declares one. The pair assertion is across the boundary
+    the port crosses: the block `port_block` hands out against everything
+    already recorded, in range, not taken, and the same answer twice, so a
+    recorded suite port still reproduces on another host.
+    """
+    entries, exclude, expected = payload
+    instances = tmp / "instances"
+    instances.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
+        inst = instances / entry.directory
+        try:
+            inst.mkdir(parents=True, exist_ok=True)
+        except OSError as ex:
+            _require(False, f"the generator could not stage {entry.directory!r}: {ex}", doc)
+        if entry.shape == "dir":
+            (inst / "instance.env").mkdir(exist_ok=True)
+        elif entry.shape == "dangling":
+            (inst / "instance.env").symlink_to(inst / "not-written.env")
+        elif isinstance(entry.body, bytes):
+            (inst / "instance.env").write_bytes(entry.body)
+        else:
+            (inst / "instance.env").write_text(entry.body, encoding="utf-8")
+
+    try:
+        taken = _timed(doc, sbconfig.recorded_ports, instances, exclude)
+    except Exception as ex:  # the scan is tolerant by contract, so any raise is one
+        raise Finding(f"recorded_ports raised {type(ex).__name__}: {ex}", doc) from ex
+    _require(isinstance(taken, set), f"recorded_ports returned {type(taken).__name__}", doc)
+    for port in sorted(taken):
+        _require(
+            str(port).isascii() and str(port).isdigit(),
+            f"recorded_ports reported {_short(port)}, which is not an ASCII port",
+            doc,
+        )
+        _require(
+            len(str(port)) <= sbconfig.PORT_MAX_DIGITS,
+            f"recorded_ports reported {_short(port)}, longer than any port",
+            doc,
+        )
+    _require(
+        expected <= taken,
+        f"the scan lost declared ports {[_short(p) for p in sorted(expected - taken)]!r}",
+        doc,
+    )
+    _require(
+        taken <= expected,
+        f"the scan invented ports {[_short(p) for p in sorted(taken - expected)]!r}",
+        doc,
+    )
+
+    top = sbconfig.PORT_BLOCK_BASE + sbconfig.PORT_BLOCK_COUNT * sbconfig.PORT_BLOCK_SIZE
+    try:
+        port = _timed(doc, sbconfig.port_block, str(exclude), taken)
+    except ValueError as ex:
+        # Exhausting the range is a refusal, not a finding, but only when the
+        # range really is exhausted: giving up early loses a block a caller
+        # could have had.
+        _require(
+            taken >= set(range(sbconfig.PORT_BLOCK_BASE, top, sbconfig.PORT_BLOCK_SIZE)),
+            f"the probe gave up with only {len(taken)} ports recorded: {ex}",
+            doc,
+        )
+        return
+    _require(
+        sbconfig.PORT_BLOCK_BASE <= port < top,
+        f"port_block handed out {port}, outside the block range",
+        doc,
+    )
+    _require(port not in taken, f"port_block handed out {port}, already recorded", doc)
+    _require(
+        sbconfig.port_block(str(exclude), taken) == port,
+        "the probe is not deterministic for one name",
+        doc,
+    )
+
+
 def _shrink(rng: random.Random, failure: str, reproduce: Callable[[str], bool]) -> str:
     """Delta-debug the offending document so the report is a minimal reproducer."""
     doc = failure
@@ -256,6 +501,14 @@ class Finding(Exception):
 def _require(condition: bool, detail: str, doc: str) -> None:
     if not condition:
         raise Finding(detail, doc)
+
+
+def _short(number: int) -> str:
+    """A number short enough to read in a report; a fuzz corpus holds 5000-digit ones."""
+    text = str(number)
+    return (
+        text if len(text) <= PORT_RUN_CHARS else f"{text[:PORT_RUN_CHARS]}... ({len(text)} digits)"
+    )
 
 
 def _timed(doc: str, call: Callable[..., object], *args: object, **kwargs: object) -> object:
@@ -384,13 +637,23 @@ def check_serveradmin(doc: str, names: list[str], tmp: Path) -> None:
     _require(admin.read_bytes() == out.encode("utf-8"), "an idempotent seed rewrote the file", doc)
 
 
-def run(
-    name: str,
-    build: Callable[[random.Random], tuple[str, Payload]],
-    check: Callable[[str, Payload, Path], None],
-    iterations: int,
-    seed: int,
-) -> int:
+@dataclass(frozen=True)
+class Target(Generic[Payload]):
+    """One parser under fuzz, and whether its document is the input it reads.
+
+    Only such a document can be shrunk: the port scan's is a rendering of a
+    tree the check builds itself, and cutting it would report something the
+    check never read.
+    """
+
+    name: str
+    build: Callable[[random.Random], tuple[str, Payload]]
+    check: Callable[[str, Payload, Path], None]
+    shrink: bool
+
+
+def run(target: Target[Payload], iterations: int, seed: int) -> int:
+    name, build, check, shrink = target.name, target.build, target.check, target.shrink
     findings: list[Finding] = []
     for index in range(iterations):
         # S311: seeded from --seed, so the corpus is reproducible rather than
@@ -415,7 +678,12 @@ def run(
                 check(doc, payload, Path(td))
             except Finding as ex:
                 ex.iteration = index
-                ex.doc = _shrink(random.Random(seed + index), ex.doc, reproduce)  # noqa: S311
+                # Only a document the payload is derived from can be shrunk
+                # down to a reproducer; the port scan's document is a rendering
+                # of a tree it builds itself, and cutting it would report
+                # something the check never read.
+                if shrink:
+                    ex.doc = _shrink(random.Random(seed + index), ex.doc, reproduce)  # noqa: S311
                 findings.append(ex)
             except Exception as ex:  # uncaught means the parser broke, not that the input was bad
                 escaped = Finding(f"uncaught {type(ex).__name__}: {ex}", "")
@@ -441,8 +709,9 @@ def run(
 
 
 TARGETS = (
-    ("serverconfig", serverconfig_case, check_serverconfig),
-    ("serveradmin", serveradmin_case, check_serveradmin),
+    Target("serverconfig", serverconfig_case, check_serverconfig, shrink=True),
+    Target("serveradmin", serveradmin_case, check_serveradmin, shrink=True),
+    Target("portscan", portscan_case, check_portscan, shrink=False),
 )
 
 
@@ -459,8 +728,8 @@ def main() -> int:
     seeds = tuple(args.seed) if args.seed else (SEED, *REGRESSION_SEEDS)
     failed = 0
     for seed in seeds:
-        for name, build, check in TARGETS:
-            failed += run(name, build, check, args.iters, seed)
+        for target in TARGETS:
+            failed += run(target, args.iters, seed)
     return 1 if failed else 0
 
 

@@ -52,6 +52,11 @@ Nothing is deprecated ahead of removal in this repository today.
   that call started, the same teardown the timeout path uses. The server is
   detached and holds the port block, so an interrupted bring-up left a server
   nobody had asked for and a retry that could not bind.
+- The port scan behind `sb create-server` skips a `SERVER_PORT` longer than
+  five digits. CPython refuses to convert a str of more than 4300 digits to an
+  int, so a junk value in another instance's `instance.env` raised a
+  `ValueError` out of an unrelated create. `scripts/test_sbconfig_fuzz.py`
+  fuzzes the scan as a third target.
 
 ## [0.4.0] - 2026-09-28
 

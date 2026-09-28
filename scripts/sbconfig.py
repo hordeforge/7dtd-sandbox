@@ -108,6 +108,13 @@ FNV_MASK = 0xFFFFFFFF
 SHELL_QUOTE = "'"
 SHELL_QUOTED_MIN = 2
 
+# The longest digit run that can still name a port this module allocates: the
+# block range ends below 27600, so five digits is every port there is. An
+# unbounded run is not a port, it is junk, and int() refuses one far earlier
+# than that: CPython caps str->int at 4300 digits and raises ValueError, which
+# used to escape this scan as a traceback and abort an unrelated `sb create`.
+PORT_MAX_DIGITS = 5
+
 # First code point XML 1.0 forbids in a character, and the floor `xml_attr`
 # refuses a declaration below: everything under it is a C0 control, and
 # tab/LF/CR inside the range are attribute-value normalized to a space on
@@ -341,8 +348,10 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
         # digit string to Python but not one to int() when it holds a
         # superscript, so `SERVER_PORT=27²` raised ValueError out of a scan
         # that exists to be tolerant of another instance's file. ASCII
-        # digits are the only ones this declares.
-        if claimed.isascii() and claimed.isdigit():
+        # digits are the only ones this declares, and no more of them than a
+        # port can hold: int() refuses a str past its own digit cap with a
+        # ValueError this scan must not raise.
+        if claimed.isascii() and claimed.isdigit() and len(claimed) <= PORT_MAX_DIGITS:
             taken.add(int(claimed))
     return taken
 

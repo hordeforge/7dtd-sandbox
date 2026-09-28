@@ -486,6 +486,26 @@ def test_recorded_ports_skips_self_and_garbage(tmp: Path) -> None:
     print("PASS recorded_ports_skips_self_and_garbage")
 
 
+def test_recorded_ports_skips_a_digit_run_no_port_can_hold(tmp: Path) -> None:
+    """A SERVER_PORT of arbitrarily many digits is skipped, not converted.
+
+    CPython refuses to convert a str of more than 4300 digits to an int, and
+    `int()` raised ValueError straight out of the scan, aborting an unrelated
+    `sb create` over another instance's file. A run longer than any port in the
+    derived range is not a declaration, so it is skipped like any other junk.
+    """
+    instances = tmp / "instances"
+    for name, port in (
+        ("srv-six", "9" * (sbconfig.PORT_MAX_DIGITS + 1)),
+        ("srv-over", "9" * 5000),
+        ("srv-neighbour", "27105"),
+    ):
+        (instances / name).mkdir(parents=True)
+        (instances / name / "instance.env").write_text(f"SERVER_PORT={port}\n", encoding="utf-8")
+    assert sbconfig.recorded_ports(instances, exclude="srv-self") == {27105}
+    print("PASS recorded_ports_skips_a_digit_run_no_port_can_hold")
+
+
 def test_seed_admins_is_utf8_under_a_c_locale(tmp: Path) -> None:
     """The names on stdin are UTF-8 whatever the host locale says.
 
@@ -798,6 +818,56 @@ def test_seed_upserts_paired_user_without_level(tmp: Path) -> None:
     print("PASS seed_upserts_paired_user_without_level")
 
 
+def test_seed_keeps_the_declared_spelling_when_adding_a_level(tmp: Path) -> None:
+    """Rewriting the spelling and adding a level are one edit, not two.
+
+    The upsert rewrote `userid` to the declared spelling and then rebuilt the
+    tag from the text it started with, so the spelling was dropped again: the
+    file reported a change and still granted level 0 to `Istanbul`, which no
+    client sends under a declaration of `istanbul`.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Local" userid="Istanbul" name="Istanbul" />\n'
+        "  </users>\n</adminTools>\n",
+        encoding="utf-8",
+    )
+    assert _seed_argv(tmp / "userdata", "istanbul") == 0
+    users = {
+        u.get("userid"): u.get("permission_level")
+        for u in ET.fromstring(admin.read_text()).iter("user")
+    }
+    assert users.get("istanbul") == "0", users
+    print("PASS seed_keeps_the_declared_spelling_when_adding_a_level")
+
+
+def test_seed_adds_the_userid_a_name_only_entry_lacks(tmp: Path) -> None:
+    """A Local entry matched on `name` gets the id the game looks an admin up by.
+
+    The entry was already there and already Local, so the upsert took it as the
+    declared admin and rewrote its level, leaving it with no `userid` at all.
+    The game resolves a join to `Local_<playername>` and looks that up as the
+    userid, so the level-0 entry admitted nobody.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Local" name="Player" />\n'
+        "  </users>\n</adminTools>\n",
+        encoding="utf-8",
+    )
+    assert _seed_argv(tmp / "userdata", "Player") == 0
+    users = {
+        u.get("userid"): u.get("permission_level")
+        for u in ET.fromstring(admin.read_text()).iter("user")
+    }
+    assert users.get("Player") == "0", users
+    print("PASS seed_adds_the_userid_a_name_only_entry_lacks")
+
+
 def test_value_xml_cannot_carry_is_refused(tmp: Path) -> None:
     """A CR or a NUL in a value is refused, not written into the config.
 
@@ -989,6 +1059,7 @@ TESTS = (
     test_port_block_stays_inside_the_port_space,
     test_recorded_ports_skips_self_and_garbage,
     test_recorded_ports_ignores_a_superseded_declaration,
+    test_recorded_ports_skips_a_digit_run_no_port_can_hold,
     test_seed_admins_is_utf8_under_a_c_locale,
     test_seed_refuses_names_that_are_not_utf8,
     test_get_reads_the_active_value,
@@ -1004,6 +1075,8 @@ TESTS = (
     test_refuses_an_interpreter_below_the_declared_floor,
     test_seed_rewrites_unparsable_admin_file,
     test_seed_upserts_paired_user_without_level,
+    test_seed_keeps_the_declared_spelling_when_adding_a_level,
+    test_seed_adds_the_userid_a_name_only_entry_lacks,
     test_value_xml_cannot_carry_is_refused,
     test_insert_skips_a_commented_closer,
     test_seed_refuses_a_dtd,
