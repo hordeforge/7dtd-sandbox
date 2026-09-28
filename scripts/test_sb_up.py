@@ -50,6 +50,8 @@ NEVER_BINDS_FAILS_BY_SEC = 30
 # off a whole-second counter ends anywhere in (timeout-1s, timeout+1s), which a
 # 3s timeout made a 33% error and a busy runner indistinguishable from a hang.
 NEVER_BINDS_MIN_SEC = 2.9
+# How long a test waits for the fixture server to appear, or to go away.
+SERVER_START_WAIT_SEC = 15
 # Attempts to find an ephemeral port that is genuinely unoccupied, see free_port.
 FREE_PORT_ATTEMPTS = 20
 
@@ -418,6 +420,53 @@ def row_for(stdout: str, name: str) -> str:
     return ""
 
 
+def test_up_stops_the_server_it_started_when_interrupted(tmp: Path) -> None:
+    """Ctrl+C during the port wait is the same failed bring-up as the timeout.
+
+    The server is detached and holds the instance's port block, so an
+    interrupted bring-up that left it running left a harness a server nobody
+    asked for and a retry that could not bind.
+    """
+    port = free_port()
+    inst = make_instance(tmp, "srv-int", port)
+    env = dict(os.environ)
+    env["SANDBOX_HOME"] = str(tmp)
+    env["SANDBOX_INSTANCES"] = str(tmp / "instances")
+    env["FAKE_SERVER_PORT"] = str(port)
+    env["FAKE_SERVER_NEVER_BINDS"] = "1"
+    pids: list[int] = []
+    try:
+        proc = subprocess.Popen(
+            ["bash", str(SB), "up", "srv-int", "--timeout", str(UP_CALL_TIMEOUT_SEC)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        # The signal has to land in the wait, after the server started, or it
+        # proves nothing about the teardown.
+        deadline = time.monotonic() + SERVER_START_WAIT_SEC
+        while not pids and time.monotonic() < deadline:
+            pids = server_pids(inst)
+            time.sleep(0.2)
+        assert pids, "the fixture server did not start, so the signal proved nothing"
+        proc.send_signal(signal.SIGINT)
+        proc.communicate(timeout=UP_CALL_TIMEOUT_SEC)
+        # sb re-raises the signal after its cleanup, so the caller sees a death
+        # by SIGINT, not an exit code standing in for one.
+        assert proc.returncode == -signal.SIGINT, (
+            f"an interrupted bring-up exited {proc.returncode}"
+        )
+        deadline = time.monotonic() + SERVER_START_WAIT_SEC
+        while pids and time.monotonic() < deadline:
+            time.sleep(0.2)
+            pids = server_pids(inst)
+        assert not pids, f"an interrupted sb up left the server running: {pids}"
+    finally:
+        stop(pids)
+    print("PASS up_stops_the_server_it_started_when_interrupted")
+
+
 TESTS = (
     test_up_returns_and_orphans_the_server,
     test_up_refuses_an_instance_already_running,
@@ -425,6 +474,7 @@ TESTS = (
     test_up_fails_inside_its_timeout_and_names_the_log,
     test_list_and_stop_see_the_running_instance,
     test_the_wait_deadline_is_monotonic,
+    test_up_stops_the_server_it_started_when_interrupted,
 )
 
 

@@ -173,6 +173,20 @@ grep -q "^export LOGFILE=" <<<"$env_out" || { echo "FAIL: env missing LOGFILE ex
 check "logs without file dies"  1 env SANDBOX_HOME="$TMP" "$SB" logs t1
 echo "log-line" > "$TMP/instances/t1/logs/output_log_client.txt"
 check "logs with file ok"       0 env SANDBOX_HOME="$TMP" "$SB" logs t1
+# A dry-run teardown reports and changes nothing; an option it does not take is
+# a usage error, not a name.
+dry_out="$(env SANDBOX_HOME="$TMP" "$SB" destroy --dry-run t1)"
+[[ -d "$TMP/instances/t1" ]] || { echo "FAIL: destroy --dry-run removed the instance" >&2; fail=1; }
+grep -q "would remove instance 't1'" <<<"$dry_out" \
+  || { echo "FAIL: destroy --dry-run did not report what it would do: $dry_out" >&2; fail=1; }
+dry_out="$(env SANDBOX_HOME="$TMP" "$SB" wipe --dry-run t1)"
+[[ -f "$TMP/instances/t1/logs/output_log_client.txt" ]] \
+  || { echo "FAIL: wipe --dry-run removed the instance's state" >&2; fail=1; }
+grep -q "would reset instance 't1'" <<<"$dry_out" \
+  || { echo "FAIL: wipe --dry-run did not report what it would do: $dry_out" >&2; fail=1; }
+check "wipe bad option refused"    2 env SANDBOX_HOME="$TMP" "$SB" wipe -f t1
+check "destroy bad option refused" 2 env SANDBOX_HOME="$TMP" "$SB" destroy -f t1
+check "destroy dry-run w/o name"   2 env SANDBOX_HOME="$TMP" "$SB" destroy --dry-run
 
 # --- teardown is by instance, on the client's marker too --------------------
 

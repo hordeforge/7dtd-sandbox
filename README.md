@@ -169,8 +169,8 @@ CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 | `sb stage <name> <mod-dir>...` | copy built modlets into the instance's `Mods` |
 | `sb render-config <name> KEY=VALUE...` | declare serverconfig properties (config is rebuilt from the base template) |
 | `sb stop <name> [name...]` | stop only these instances' processes |
-| `sb wipe <name> [name...]` | reset game, Mods, saves/userdata to pristine |
-| `sb destroy <name> [name...]` | remove instances (one already gone is exit 0, so a re-run teardown converges) |
+| `sb wipe <name> [name...] [--dry-run]` | reset game, Mods, saves/userdata to pristine |
+| `sb destroy <name> [name...] [--dry-run]` | remove instances (one already gone is exit 0, so a re-run teardown converges) |
 | `sb list` / `sb status <name>` | instances and running state |
 | `sb logs <name> [-f \| --follow]` | client or server log |
 | `sb env <name>` | eval-able contract for sibling harnesses |

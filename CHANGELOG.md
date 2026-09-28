@@ -32,6 +32,12 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ## [Unreleased]
 
+### Added
+
+- `sb wipe` and `sb destroy` take `--dry-run`, which reports what the run
+  would touch and changes nothing, so a harness can check a teardown before
+  running one.
+
 ### Fixed
 
 - Concurrent `sb` invocations against one instance are serialized. The
@@ -42,6 +48,10 @@ Nothing is deprecated ahead of removal in this repository today.
   a server. Each instance verb now holds an advisory `flock`
   (`$SANDBOX_INSTANCES/.locks/<name>.lock`), released when `sb` exits and
   closed before any game is exec'd.
+- Ctrl+C during the port wait of `sb up` or `sb run both` stops the server
+  that call started, the same teardown the timeout path uses. The server is
+  detached and holds the port block, so an interrupted bring-up left a server
+  nobody had asked for and a retry that could not bind.
 
 ## [0.4.0] - 2026-09-28
 

@@ -218,8 +218,10 @@ Underlying commands (full control):
                        (KEY is [A-Za-z_][A-Za-z0-9_]*, VALUE is one line)
   launch <name> [-- args...]    run client under Proton, no Steam
   launch-server <name>          run dedicated server, blocking
-  wipe <name> [name...] reset game/Mods/saves to pristine
-  destroy <name> [name...]      remove instance entirely (already gone: exit 0,
+  wipe <name> [name...] [--dry-run]
+                       reset game/Mods/saves to pristine
+  destroy <name> [name...] [--dry-run]
+                       remove instance entirely (already gone: exit 0,
                        so a re-run teardown converges rather than failing)
   stop <name> [name...]         TERM/KILL only this instance's processes
   list                  list instances with running state
@@ -378,20 +380,24 @@ not running.
 EOF
       ;;
     wipe) cat <<'EOF'
-Usage: sb wipe <name> [name...]
+Usage: sb wipe <name> [name...] [--dry-run]
 
 Reset instances to pristine base state: game, Mods, and saves (plus userdata
 and the declared config on a server). The instance keeps its identity, port
 block and admins; its declared serverconfig properties go with the state they
 configured. Refuses an instance that is running.
+
+  --dry-run  report what would be reset and change nothing
 EOF
       ;;
     destroy) cat <<'EOF'
-Usage: sb destroy <name> [name...]
+Usage: sb destroy <name> [name...] [--dry-run]
 
 Remove instances entirely, game tree and Proton prefix included. A running
 instance is stopped first. This cannot be undone; 'sb wipe' resets state and
 keeps the instance.
+
+  --dry-run  report what would be removed and change nothing
 EOF
       ;;
     list) cat <<'EOF'
@@ -1737,6 +1743,25 @@ terminate_instance() {
   kill -KILL "${pids[@]}" 2>/dev/null || true
 }
 
+# Names and --dry-run for the two verbs that delete state. A dry run reports
+# what the real run would touch and changes nothing, so a harness can check a
+# teardown before it runs one. Sets DRY_RUN and DESTRUCTIVE_NAMES.
+DRY_RUN=0
+DESTRUCTIVE_NAMES=()
+destructive_args() { # destructive_args <verb> <arg>...
+  local verb="$1" a; shift
+  DRY_RUN=0
+  DESTRUCTIVE_NAMES=()
+  for a in "$@"; do
+    case "$a" in
+      --dry-run) DRY_RUN=1 ;;
+      -*) usage_err "unknown $verb option '$a' (--dry-run; see 'sb help $verb')" ;;
+      *) DESTRUCTIVE_NAMES+=("$a") ;;
+    esac
+  done
+  (( ${#DESTRUCTIVE_NAMES[@]} )) || usage_err "usage: sb $verb <name> [name...] [--dry-run]"
+}
+
 cmd_destroy() {
   local name="$1" inst
   validate_name "$name"
@@ -1751,6 +1776,14 @@ cmd_destroy() {
   # already gone and left the rest of the list standing.
   if [[ ! -d "$inst" ]]; then
     echo "sb: instance '$name' is not there"
+    return 0
+  fi
+  if (( DRY_RUN )); then
+    if [[ -n "$(instance_procs "$inst")" ]]; then
+      echo "would stop and remove instance '$name' at $inst"
+    else
+      echo "would remove instance '$name' at $inst"
+    fi
     return 0
   fi
   if [[ -n "$(instance_procs "$inst")" ]]; then
@@ -1773,6 +1806,14 @@ cmd_wipe() {
   pids="$(instance_procs "$inst")"
   if [[ -n "$pids" ]]; then
     die "instance '$name' is running (pids: ${pids//$'\n'/ }); stop it first ('sb stop $name')"
+  fi
+  if (( DRY_RUN )); then
+    if [[ "$kind" == server ]]; then
+      echo "would reset server instance '$name': game, Mods, userdata and declared config back to the base"
+    else
+      echo "would reset instance '$name': game, Mods and saves back to the pristine base"
+    fi
+    return 0
   fi
   if [[ "$kind" == server ]]; then
     [[ -f "$SERVER_BASE_GAME/7DaysToDieServer.x86_64" ]] || die "server base missing (run 'sb fetch-server-base')"
@@ -2255,6 +2296,12 @@ cmd_up() {
   instance_server_ports "$inst"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
   start_server_detached "$inst" "$name" "$port" "$telnet_port"
+  # Ctrl+C during the wait is the same failed bring-up as the timeout: the
+  # server this call started is detached and holds the port block. The traps
+  # stop it, then hand the signal to the top-level handler. Put back once the
+  # port is up, where the server belongs to the caller.
+  trap 'terminate_instance "$inst"; sb_on_signal INT' INT
+  trap 'terminate_instance "$inst"; sb_on_signal TERM' TERM
   if ! wait_for_port 127.0.0.1 "$port" "$timeout"; then
     # A server that never bound is still running and still holds its port
     # block. Stopping it here is what keeps a failed bring-up from leaving one
@@ -2264,6 +2311,8 @@ cmd_up() {
     terminate_instance "$inst"
     die "server '$name' did not open port $port in ${timeout}s; check $inst/logs/server.log"
   fi
+  trap 'sb_on_signal INT' INT
+  trap 'sb_on_signal TERM' TERM
   # stdout is the contract and nothing else: the documented caller is
   # `eval "$(sb up <name>)"`, which a status line on stdout would break. The
   # progress line a person reads goes to stderr, where it does not collide.
@@ -2337,6 +2386,9 @@ cmd_run() {
       lock_instance "$srv_name"
       echo "starting server '$srv_name' (port $srv_port) in background..."
       start_server_detached "$srv_inst" "$srv_name" "$srv_port" "$srv_telnet_port"
+      # Same as `sb up`: an interrupted wait stops the server it started.
+      trap 'terminate_instance "$srv_inst"; sb_on_signal INT' INT
+      trap 'terminate_instance "$srv_inst"; sb_on_signal TERM' TERM
       echo "waiting for server port $srv_port ..."
       if ! wait_for_port 127.0.0.1 "$srv_port" "$RUN_BOTH_PORT_WAIT_SEC"; then
         # Same as `sb up`: a server that never bound is stopped, not left
@@ -2420,12 +2472,12 @@ main() {
       cmd_render_config "$rname" "$@"
       ;;
     destroy)
-      [[ $# -ge 1 ]] || usage_err "usage: sb destroy <name> [name...]"
-      local dn; for dn in "$@"; do cmd_destroy "$dn"; done
+      destructive_args destroy "$@"
+      local dn; for dn in "${DESTRUCTIVE_NAMES[@]}"; do cmd_destroy "$dn"; done
       ;;
     wipe)
-      [[ $# -ge 1 ]] || usage_err "usage: sb wipe <name> [name...]"
-      local wn; for wn in "$@"; do cmd_wipe "$wn"; done
+      destructive_args wipe "$@"
+      local wn; for wn in "${DESTRUCTIVE_NAMES[@]}"; do cmd_wipe "$wn"; done
       ;;
     list|ls) cmd_list ;;
     status) [[ $# -ge 1 ]] || usage_err "usage: sb status <name>"; cmd_status "$1" ;;
