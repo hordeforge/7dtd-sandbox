@@ -44,7 +44,8 @@ SERVER_KIND=server
 EOF
 
 # shellcheck disable=SC1090,SC1091 # extract the helpers from sb without running main
-source /dev/stdin <<<"$(sed -n '/^default_server_admins()/,/^}/p' "$SB")
+source /dev/stdin <<<"$(sed -n '/^instance_env_value()/,/^}/p' "$SB")
+$(sed -n '/^default_server_admins()/,/^}/p' "$SB")
 $(sed -n '/^seed_sandbox_admins()/,/^}/p' "$SB")"
 
 seed_sandbox_admins "$INST"

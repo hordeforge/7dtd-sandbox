@@ -249,11 +249,12 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     old = match.group(1)
     if 'permission_level="0"' in old:
         return text, False
-    new = re.sub(r'permission_level="[^"]*"', 'permission_level="0"', old)
-    if new == old:
+    if re.search(r'permission_level="[^"]*"', old):
+        new = re.sub(r'permission_level="[^"]*"', 'permission_level="0"', old)
+    else:
+        # No permission_level at all: add it to whichever of the self-closing
+        # and paired forms the depot shipped.
         new = re.sub(r"\s*/?>$", ' permission_level="0" />', old)
-    if new == old:
-        return text, False
     return text[: match.start(1)] + new + text[match.end(1) :], True
 
 

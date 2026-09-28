@@ -148,6 +148,7 @@ check "launch on server dies"   1 env SANDBOX_HOME="$TMP" "$SB" launch srv-t
 # server kicked it minutes into a run with nothing naming the cause.
 # shellcheck disable=SC1090,SC1091 # extract the pruner from sb without running main
 source /dev/stdin <<<"$(sed -n '/^STOCK_MOD_GLOBS=/p' "$SB")
+$(sed -n '/^is_stock_mod()/,/^}/p' "$SB")
 $(sed -n '/^prune_instance_mods()/,/^}/p' "$SB")"
 
 MODS="$TMP/instances/pruneme/game/Mods"
@@ -220,6 +221,15 @@ check "malformed declared SB_RES refused" 1 env SANDBOX_HOME="$TMP" "$SB" env t3
 mkdir -p "$TMP/instances/t4"
 printf 'SANDBOX_NAME=t4\nSB_RES=1280x720\nSB_FULLSCREEN=yes\n' > "$TMP/instances/t4/instance.env"
 check "malformed declared SB_FULLSCREEN refused" 1 env SANDBOX_HOME="$TMP" "$SB" env t4
+
+# The launch path refuses the same declaration rather than starting the game
+# with no -screen-* arguments at all, which is what a refusal inside the
+# command substitution used to produce.
+mkdir -p "$TMP/instances/t5/game"
+printf 'SANDBOX_NAME=t5\nSB_RES=huge\nSB_FULLSCREEN=0\n' > "$TMP/instances/t5/instance.env"
+bad_launch="$(env SANDBOX_HOME="$TMP" "$SB" launch t5 2>&1 || true)"
+grep -qF "SB_RES must look like" <<<"$bad_launch" \
+  || { echo "FAIL: sb launch started on a malformed declared window: $bad_launch" >&2; fail=1; }
 
 # --- up / stage / render-config surface ------------------------------------
 

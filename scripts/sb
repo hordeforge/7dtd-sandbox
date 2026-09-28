@@ -109,6 +109,14 @@ validate_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid instance name '$1' (use [A-Za-z0-9._-], not starting with '-')"
 }
 
+# One declared value from an instance's instance.env, or empty. Every reader
+# goes through here, so a key is looked up the same way everywhere: last
+# declaration wins, a missing key reads as empty rather than as the comment
+# lines that surround it.
+instance_env_value() {
+  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
+}
+
 # Steam only ever validates files it owns (inside a steamapps library). The
 # sandbox's whole isolation story is that Steam neither owns nor touches base/
 # or instances/, so a directory under any steamapps tree is refused here.
@@ -170,6 +178,16 @@ serverplatforms=Steam,LAN,Local,
 EOF
 }
 
+# A server instance keeps the stock platform surface (Steam listed first) but
+# still admits Local joins, which is what the seeded admins authenticate with.
+write_server_platform() {
+  cat > "$1" <<'EOF'
+platform=Steam
+crossplatform=None
+serverplatforms=Steam,LAN,Local,
+EOF
+}
+
 ensure_local_platform() {
   local cfg="$1/platform.cfg"
   if [[ -f "$cfg" ]] && grep -q '^platform=Local' "$cfg"; then
@@ -186,7 +204,7 @@ ensure_local_platform() {
 # level-0 Local entry for every client instance name under INSTANCES_DIR.
 seed_sandbox_admins() {
   local inst="$1" declared name args=()
-  declared="$(sed -n 's/^SERVER_ADMINS=//p' "$inst/instance.env" 2>/dev/null | head -1)"
+  declared="$(instance_env_value "$inst" SERVER_ADMINS)"
   # An instance created before SERVER_ADMINS existed still gets its pair name.
   [[ -n "$declared" ]] || declared="$(default_server_admins "$(basename "$inst")")"
   local IFS=,
@@ -215,8 +233,7 @@ link_prefix_logs() {
 # STEAM_COMPAT_DATA_PATH; server instances carry SB_INSTANCE (set at launch).
 # Never matches the steam client or other instances.
 instance_pids() {
-  local compat="$1" marker="${3:-STEAM_COMPAT_DATA_PATH}" pid
-  local value="${2:-$compat}"
+  local marker="$1" value="$2" ef pid
   for ef in /proc/[0-9]*/environ; do
     [[ -r "$ef" ]] || continue
     pid="${ef#/proc/}"; pid="${pid%/environ}"
@@ -242,9 +259,9 @@ instance_procs() {
   local inst="$1" kind
   kind="$(instance_kind "$inst")"
   if [[ "$kind" == server ]]; then
-    instance_pids "$inst" "$inst" SB_INSTANCE
+    instance_pids SB_INSTANCE "$inst"
   else
-    instance_pids "$inst/compatdata"
+    instance_pids STEAM_COMPAT_DATA_PATH "$inst/compatdata"
   fi
 }
 
@@ -386,7 +403,7 @@ cmd_create_server() {
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
   local inst="$INSTANCES_DIR/$name"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
-  local port admins
+  local port admins extra
   port="$(alloc_server_ports "$name")"
   admins="$(default_server_admins "$name")"
   for extra in "$@"; do
@@ -397,11 +414,7 @@ cmd_create_server() {
   copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
   prune_instance_mods "$inst"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
-  cat > "$inst/game/platform.cfg" <<'EOF'
-platform=Steam
-crossplatform=None
-serverplatforms=Steam,LAN,Local,
-EOF
+  write_server_platform "$inst/game/platform.cfg"
   # Written before seeding and rendering: both read their declaration back
   # from this file, so the instance is described in one place.
   cat > "$inst/instance.env" <<EOF
@@ -435,8 +448,8 @@ cmd_launch_server() {
   grep -q '^SERVER_KIND=server' "$inst/instance.env" || die "'$name' is a client instance; use 'sb launch'"
   local game="$inst/game"
   local port telnet_port
-  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env")"
-  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env")"
+  port="$(instance_env_value "$inst" SERVER_PORT)"
+  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
   [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
   mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs" "$inst/logs"
   local cfg
@@ -465,7 +478,7 @@ collect_mods_native_path() {
   [[ -d "$mods" ]] || return 0
   for entry in "$mods"/*/Native; do
     [[ -d "$entry" ]] || continue
-    if [[ -z "$out" ]]; then out="$entry"; else out="$out:$entry"; fi
+    out="${out:+$out:}$entry"
   done
   printf '%s' "$out"
 }
@@ -559,17 +572,11 @@ cmd_doctor() {
     label="${b##*:}"
     b="${b%%:*}"
     [[ -d "$b/Mods" ]] || continue
-    local extra=() entry name pattern keep
+    local extra=() entry name
     for entry in "$b/Mods"/*; do
       [[ -e "$entry" ]] || continue
       name="$(basename "$entry")"
-      keep=0
-      # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
-      for pattern in $STOCK_MOD_GLOBS; do
-        # shellcheck disable=SC2053 # pattern is a glob, not a literal
-        [[ "$name" == $pattern ]] && { keep=1; break; }
-      done
-      (( keep )) || extra+=("$name")
+      is_stock_mod "$name" || extra+=("$name")
     done
     if (( ${#extra[@]} )); then
       echo "$label base ships: ${extra[*]}"
@@ -582,10 +589,11 @@ cmd_doctor() {
   echo "--- reflink ---"
   local probe="$SANDBOX_HOME/base/.reflink_probe"
   if cp --reflink=always "$BASE_GAME/7DaysToDie.exe" "$probe" 2>/dev/null; then
-    echo "btrfs reflink available (cheap COW copies)"; rm -f "$probe"
+    echo "btrfs reflink available (cheap COW copies)"
   else
     echo "reflink unavailable (instances will be plain copies)"
   fi
+  rm -f "$probe"
   echo "--- platform.cfg in client base ---"
   [[ -f "$BASE_GAME/platform.cfg" ]] && cat "$BASE_GAME/platform.cfg"
   echo "--- steam ownership guard ---"
@@ -679,11 +687,7 @@ cmd_wipe() {
     rm -rf "$inst/game"
     copy_tree "$SERVER_BASE_GAME" "$inst/game" "server base game"
     prune_instance_mods "$inst"
-    cat > "$inst/game/platform.cfg" <<'EOF'
-platform=Steam
-crossplatform=None
-serverplatforms=Steam,LAN,Local,
-EOF
+    write_server_platform "$inst/game/platform.cfg"
     rm -rf "$inst/userdata"
     mkdir -p "$inst/userdata/Saves" "$inst/userdata/Logs"
     seed_sandbox_admins "$inst"
@@ -755,15 +759,13 @@ cmd_env() {
     return 0
   fi
   PROTON="$(detect_proton)"
-  # Resolved before the heredoc: inside a command substitution `die` would exit
-  # the subshell and hand the caller an empty value instead of a refusal, so a
-  # bad SB_RES would silently produce a client with no window arguments.
-  local screen_args res fullscreen
-  screen_args="$(sandbox_screen_args "$inst")"
-  res="$(sed -n 's/^SB_RES=//p' "$inst/instance.env" 2>/dev/null | head -1)"
-  fullscreen="$(sed -n 's/^SB_FULLSCREEN=//p' "$inst/instance.env" 2>/dev/null | head -1)"
-  [[ -n "$res" ]] || res=1280x720
-  [[ -n "$fullscreen" ]] || fullscreen=0
+  # Read and validated here rather than in a command substitution: a refusal
+  # must exit `sb` itself, not a subshell, which would hand the caller a client
+  # with no window arguments at all.
+  local res fullscreen win_args
+  read -r res fullscreen < <(declared_window "$inst")
+  validate_window "$res" "$fullscreen"
+  win_args="$(screen_args "$res" "$fullscreen")"
   cat <<EOF
 export SANDBOX_NAME='$name'
 export INSTANCE_DIR='$inst'
@@ -775,7 +777,7 @@ export STEAM_APPID='$STEAM_APPID'
 export LOGFILE='$inst/logs/output_log_client.txt'
 export SB_RES='$res'
 export SB_FULLSCREEN='$fullscreen'
-export SB_SCREEN_ARGS='$screen_args'
+export SB_SCREEN_ARGS='$win_args'
 EOF
 }
 
@@ -806,9 +808,12 @@ cmd_launch() {
     none) gfx=() ;;
     *) die "GFX_API must be d3d11, d3d12, vulkan, glcore or none (got '$gfx_api')" ;;
   esac
-  local screen_args=()
+  local win_args=()
   if ! printf '%s\0' "$@" | grep -qz -- '-screen-'; then
-    read -r -a screen_args <<< "$(sandbox_screen_args "$inst")"
+    local res fullscreen
+    read -r res fullscreen < <(declared_window "$inst")
+    validate_window "$res" "$fullscreen"
+    read -r -a win_args < <(screen_args "$res" "$fullscreen")
   fi
   local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_sandbox.txt"
   echo "sandbox:   $name"
@@ -817,10 +822,10 @@ cmd_launch() {
   echo "compat:    $compat"
   echo "log:       $inst/logs/output_log_client.txt"
   echo "player:    $player"
-  echo "window:    ${screen_args[*]:-<as passed>}"
+  echo "window:    ${win_args[*]:-<as passed>}"
   cd "$game"
   exec env 7DTD_PLAYER_NAME="$player" "$PROTON" run ./7DaysToDie.exe "${gfx[@]}" -nogs -noeac -skipintro -SkipNewsScreen=true \
-    -logfile "$win_log" "${screen_args[@]}" "$@"
+    -logfile "$win_log" "${win_args[@]}" "$@"
 }
 
 cmd_stop() {
@@ -868,33 +873,38 @@ cmd_logs() {
 
 # --- run: three-mode dispatcher -------------------------------------------
 
-# The Unity window arguments every sandbox client launches with: windowed at
-# SB_RES (default 1280x720) unless SB_FULLSCREEN=1.
-#
 # A sandbox client is a test fixture, not a game session: it must never take
 # the display fullscreen, and several of them have to be visible at once. The
 # command line wins over whatever the prefix's saved prefs hold, which is why
-# this is passed rather than seeded into the registry, and `sb env` exports it
-# so a launcher that is not `sb launch` (7dtd-fastconnect's launch_client.sh,
-# used by 7dtd-playtest) applies the same window.
+# the window is passed at every launch rather than seeded into the registry,
+# and `sb env` exports it so a launcher that is not `sb launch`
+# (7dtd-fastconnect's launch_client.sh, used by 7dtd-playtest) applies the same
+# window. A malformed declaration is a refusal, never a client with no window
+# arguments.
 validate_window() {
   local res="$1" fullscreen="$2"
   [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
   case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
 }
 
-# The window this instance declared. Read from its instance.env, not from the
-# caller's environment: the same instance must open the same window on any
-# machine. An instance created before the window was declared falls back to the
-# defaults, which is what it was getting anyway.
-sandbox_screen_args() {
-  local inst="$1" res fullscreen
-  res="$(sed -n 's/^SB_RES=//p' "$inst/instance.env" 2>/dev/null | head -1)"
-  fullscreen="$(sed -n 's/^SB_FULLSCREEN=//p' "$inst/instance.env" 2>/dev/null | head -1)"
-  [[ -n "$res" ]] || res=1280x720
-  [[ -n "$fullscreen" ]] || fullscreen=0
-  validate_window "$res" "$fullscreen"
-  echo "-screen-fullscreen $fullscreen -screen-width ${res%%x*} -screen-height ${res##*x}"
+# The window this instance declared, as "<res> <fullscreen>". Read from its
+# instance.env, not from the caller's environment: the same instance must open
+# the same window on any machine. An instance created before the window was
+# declared falls back to the defaults, which is what it was getting anyway.
+# Pure: the caller validates, so a refusal exits `sb` rather than a subshell.
+declared_window() {
+  local inst="$1" res fullscreen default_res=1280x720 default_fullscreen=0
+  res="$(instance_env_value "$inst" SB_RES)"
+  fullscreen="$(instance_env_value "$inst" SB_FULLSCREEN)"
+  [[ -n "$res" ]] || res="$default_res"
+  [[ -n "$fullscreen" ]] || fullscreen="$default_fullscreen"
+  echo "$res $fullscreen"
+}
+
+# The Unity window arguments every sandbox client launches with: windowed at
+# the declared SB_RES (default 1280x720) unless SB_FULLSCREEN=1.
+screen_args() {
+  echo "-screen-fullscreen $2 -screen-width ${1%%x*} -screen-height ${1##*x}"
 }
 
 # The only mod an instance keeps unconditionally: the Harmony loader every code
@@ -908,6 +918,19 @@ sandbox_screen_args() {
 # A suite that wants one names it in its mods list like any other.
 STOCK_MOD_GLOBS='0_TFP_Harmony'
 
+# True when a Mods entry is stock, that is the one loader an instance always
+# keeps. `sb doctor` reports the same set it prunes, so the two cannot drift
+# into disagreeing about what "stock" means.
+is_stock_mod() {
+  local name="$1" pattern
+  # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
+  for pattern in $STOCK_MOD_GLOBS; do
+    # shellcheck disable=SC2053 # pattern is a glob, not a literal
+    [[ "$name" == $pattern ]] && return 0
+  done
+  return 1
+}
+
 # An instance's Mods are the Harmony loader plus exactly what was declared.
 #
 # A base seeded from a Steam install carries whatever that install had. This
@@ -920,18 +943,12 @@ STOCK_MOD_GLOBS='0_TFP_Harmony'
 # the pristine depot copy, and what an instance runs stays a pure function of
 # the depot's stock mods and the declaration.
 prune_instance_mods() {
-  local inst="$1" mods="$1/game/Mods" entry base keep removed=()
+  local inst="$1" mods="$1/game/Mods" entry base removed=()
   [[ -d "$mods" ]] || return 0
   for entry in "$mods"/*; do
     [[ -e "$entry" ]] || continue
     base="$(basename "$entry")"
-    keep=0
-    # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
-    for pattern in $STOCK_MOD_GLOBS; do
-      # shellcheck disable=SC2053 # pattern is a glob, not a literal
-      [[ "$base" == $pattern ]] && { keep=1; break; }
-    done
-    (( keep )) && continue
+    is_stock_mod "$base" && continue
     rm -rf "$entry"
     removed+=("$base")
   done
@@ -1002,8 +1019,8 @@ wait_for_port() {
   local host="$1" port="$2" timeout="${3:-90}"
   local end=$(( $(date +%s) + timeout ))
   while (( $(date +%s) < end )); do
+    # The connection is opened in a subshell, so the socket closes with it.
     if (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null; then
-      exec 3>&- 3<&-
       return 0
     fi
     sleep 1
@@ -1035,8 +1052,8 @@ cmd_up() {
   pids="$(instance_procs "$inst")"
   [[ -n "$pids" ]] && die "instance '$name' is already running (pids: $(echo "$pids" | tr '\n' ' '))"
   local port telnet_port
-  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
-  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  port="$(instance_env_value "$inst" SERVER_PORT)"
+  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
   [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
   start_server_detached "$inst" "$name" "$port" "$telnet_port"
   if ! wait_for_port 127.0.0.1 "$port" "$timeout"; then
@@ -1071,8 +1088,8 @@ cmd_render_config() {
   done
   record_server_props "$inst" "$@"
   local port telnet_port
-  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
-  telnet_port="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  port="$(instance_env_value "$inst" SERVER_PORT)"
+  telnet_port="$(instance_env_value "$inst" SERVER_TELNET_PORT)"
   [[ -n "$port" ]] || die "no SERVER_PORT in $inst/instance.env (recreate the instance)"
   echo "config -> $(apply_server_config "$inst" "$name" "$port" "$telnet_port")"
 }
@@ -1104,7 +1121,7 @@ cmd_run() {
 
       local srv_inst="$INSTANCES_DIR/$srv_name"
       local srv_port
-      srv_port="$(sed -n 's/^SERVER_PORT=//p' "$srv_inst/instance.env" | head -1)"
+      srv_port="$(instance_env_value "$srv_inst" SERVER_PORT)"
       [[ -n "$srv_port" ]] || die "no SERVER_PORT in $srv_inst/instance.env"
 
       echo "starting server '$srv_name' (port $srv_port) in background..."

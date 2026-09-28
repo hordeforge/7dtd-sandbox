@@ -49,6 +49,10 @@ Nothing is deprecated ahead of removal in this repository today.
   into two that read as separate.
 - The 0.2.0 compare link pointed at `/releases/tag/`, which is a page, not the
   diff from 0.1.0.
+- `sb launch` refuses a malformed `SB_RES` / `SB_FULLSCREEN` in an instance's
+  declaration. The check ran inside a command substitution, so the refusal
+  exited the subshell and the game started with no `-screen-*` arguments at
+  all, the silent fallback the window contract forbids.
 
 ### Documentation
 
