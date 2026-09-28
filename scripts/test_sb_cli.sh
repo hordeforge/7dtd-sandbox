@@ -189,7 +189,7 @@ check "admin name with slash refused"  2 env SANDBOX_HOME="$TMP" "$SB" create-se
 # blocks, the client failed to deserialize the first world package, and the
 # server kicked it minutes into a run with nothing naming the cause.
 # shellcheck disable=SC1090,SC1091 # extract the pruner from sb without running main
-source /dev/stdin <<<"$(sed -n '/^STOCK_MOD_GLOBS=/p' "$SB")
+source /dev/stdin <<<"$(sed -n '/^STOCK_MOD=/p' "$SB")
 $(sed -n '/^is_stock_mod()/,/^}/p' "$SB")
 $(sed -n '/^prune_instance_mods()/,/^}/p' "$SB")"
 
@@ -227,8 +227,8 @@ expect_eq "no pair for a bare name" "$(default_server_admins standalone)" ""
 
 # instance.env is source-able and `sb env` prints it for eval, so a --admin
 # value carrying shell metacharacters would run in the next harness's shell.
-# The helper calls sb's usage_err, so stub the two exits it uses.
-die() { echo "test: $*" >&2; exit 1; }
+# The helper calls sb's usage_err, so stub the exit it uses. `die` is already
+# in scope, sourced from sb above.
 usage_err() { echo "test: $*" >&2; exit 2; }
 # shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
 source /dev/stdin <<<"$(sed -n '/^validate_admin_name()/,/^}/p' "$SB")"

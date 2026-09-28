@@ -22,8 +22,6 @@ import sbconfig
 
 # sbconfig's exit surface: 0 rendered, 1 a failed render or a missing key,
 # 2 a malformed invocation. Named so a change to it is a change here too.
-EXIT_OK = 0
-EXIT_FAILED = 1
 EXIT_USAGE = 2
 
 # The stock template mentions UserDataFolder twice: once commented, once

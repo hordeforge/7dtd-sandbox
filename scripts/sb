@@ -154,27 +154,12 @@ validate_name() {
 # than as the comment lines that surround it. Last wins because that is what
 # `sb env` hands the caller: it exports every declaration, so the shell's own
 # last-one-wins settles a hand-edited duplicate before any reader of this file
-# ever sees it. The readers that need the whole file rather than one value
-# (`instance_server_ports`, `instance_kind`, `cmd_env`) walk it themselves.
+# ever sees it. `cmd_env` is the one reader that walks the file itself, because
+# it emits every declaration rather than one.
 # One sed, no second process to trim its output: the bring-up paths look up a
 # dozen keys each.
 env_value() {
   sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1
-}
-
-# An instance-owned key the bring-up cannot proceed without.
-require_env_value() {
-  local inst="$1" key="$2" value
-  value="$(env_value "$inst" "$key")"
-  [[ -n "$value" ]] || die "no $key in $inst/instance.env (recreate the instance)"
-  echo "$value"
-}
-
-# A serverconfig property name. It is a regex in the upsert that rewrites an
-# existing property and a line prefix in instance.props, so it stays to the
-# characters the stock config uses.
-validate_prop_key() {
-  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || usage_err "invalid property name '$1' (use [A-Za-z][A-Za-z0-9_]*)"
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
@@ -643,7 +628,7 @@ cmd_create_server() {
     die "server instance '$name' was not created; the partial tree at $inst is removed"
   fi
   local port
-  port="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
+  port="$(env_value "$inst" SERVER_PORT)"
   echo "server instance '$name' created at $inst (ports ${port}..$(( port + 4 )))"
 }
 
@@ -766,8 +751,8 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
 # before the server is started, rather than by whatever the harness finds first.
 instance_server_ports() { # instance_server_ports <inst>; sets SERVER_PORT and SERVER_TELNET_PORT
   local inst="$1"
-  SERVER_PORT="$(sed -n 's/^SERVER_PORT=//p' "$inst/instance.env" | head -1)"
-  SERVER_TELNET_PORT="$(sed -n 's/^SERVER_TELNET_PORT=//p' "$inst/instance.env" | head -1)"
+  SERVER_PORT="$(env_value "$inst" SERVER_PORT)"
+  SERVER_TELNET_PORT="$(env_value "$inst" SERVER_TELNET_PORT)"
   [[ "$SERVER_PORT" =~ ^[1-9][0-9]*$ ]] \
     || die "no valid SERVER_PORT in $inst/instance.env (recreate the instance)"
   (( SERVER_PORT <= 65535 )) \
@@ -1098,11 +1083,9 @@ cmd_wipe() {
 }
 
 instance_running() {
-  local inst="$1" count=0 pid
-  while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then count=$(( count + 1 )); fi
-  done < <(pids_for_marker "$(instance_marker "$inst")")
-  (( count )) && echo "yes ($count procs)" || echo "no"
+  local -a pids
+  mapfile -t pids < <(instance_procs "$1")
+  (( ${#pids[@]} )) && echo "yes (${#pids[@]} procs)" || echo "no"
 }
 
 cmd_list() {
@@ -1154,18 +1137,14 @@ cmd_status() {
   cat "$inst/instance.env" 2>/dev/null || true
 }
 
-# One `export K=V` line on stdout, both halves quoted: the documented consumer
+# One `export K=V` line on stdout, the value quoted: the documented consumer
 # is `eval "$(sb env <name>)"`, so a path or a declared value carrying a quote
-# or a command substitution would otherwise run in the caller's shell.
+# or a command substitution would otherwise run in the caller's shell. The key
+# needs no quoting: `cmd_env` passes the fixed names below, and every key read
+# out of instance.env is dropped unless it already matches [A-Za-z_][A-Za-z0-9_]*.
 emit_export() {
-  local key="$1" value="$2" kq vq
-  shquote "$key"; kq="$REPLY"
-  shquote "$value"; vq="$REPLY"
-  if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    printf 'export %s=%s\n' "$key" "$vq"
-  else
-    printf 'export %s=%s\n' "$kq" "$vq"
-  fi
+  shquote "$2"
+  printf 'export %s=%s\n' "$1" "$REPLY"
 }
 
 cmd_env() {
@@ -1352,20 +1331,14 @@ screen_args() {
 # Xample_MarkersMod; the client carries neither), so keeping them makes every
 # client/server pair asymmetric by construction: the server registers content
 # the client never loaded, and the first world package it sends is unparseable.
-# A suite that wants one names it in its mods list like any other.
-STOCK_MOD_GLOBS='0_TFP_Harmony'
+# A suite that wants one stages it like any other modlet.
+STOCK_MOD='0_TFP_Harmony'
 
 # True when a Mods entry is stock, that is the one loader an instance always
 # keeps. `sb doctor` reports the same set it prunes, so the two cannot drift
 # into disagreeing about what "stock" means.
 is_stock_mod() {
-  local name="$1" pattern
-  # shellcheck disable=SC2086 # STOCK_MOD_GLOBS is a deliberate glob list
-  for pattern in $STOCK_MOD_GLOBS; do
-    # shellcheck disable=SC2053 # pattern is a glob, not a literal
-    [[ "$name" == $pattern ]] && return 0
-  done
-  return 1
+  [[ "$1" == "$STOCK_MOD" ]]
 }
 
 # An instance's Mods are the Harmony loader plus exactly what was declared.
@@ -1558,7 +1531,6 @@ cmd_render_config() {
 
 cmd_run() {
   local mode="$1" name="$2"; shift 2
-  [[ "${1:-}" == "--" ]] && shift
   validate_name "$name"
   case "$mode" in
     client)

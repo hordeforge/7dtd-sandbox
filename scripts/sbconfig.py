@@ -226,9 +226,9 @@ def render(
         dst.parent.mkdir(parents=True, exist_ok=True)
     except OSError as ex:
         raise RuntimeError(f"cannot write generated serverconfig {dst}: {ex}") from ex
-    # The rendered config can carry TelnetPassword; keep it user-only rather
-    # than inheriting a world-readable umask.
-    _atomic_write(dst, text, mode=0o600)
+    # The rendered config can carry TelnetPassword; _atomic_write keeps it
+    # user-only rather than inheriting a world-readable umask.
+    _atomic_write(dst, text)
     return text
 
 
@@ -477,34 +477,27 @@ def _wellformed(text: str) -> bool:
     return True
 
 
-def _restrict(path: Path) -> None:
-    """Keep an admin/secret-bearing file user-only rather than the umask's."""
-    try:
-        path.chmod(0o600)
-    except OSError as ex:
-        print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
-
-
-def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+def _atomic_write(path: Path, text: str) -> None:
     """Publish via temp+replace so a failed write leaves the old file intact.
 
-    The mode is applied to the temp file, before the rename, so there is no
-    window in which the published name carries the process umask, and the
-    file being replaced does not widen either.
+    The file is always published 0600: the rendered config can carry
+    TelnetPassword, and serveradmin.xml a level-0 admin list. The mode is
+    applied to the temp file, before the rename, so there is no window in which
+    the published name carries the process umask, and the file being replaced
+    does not widen either.
     """
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     try:
         # newline="": text mode would translate a declared CR into CRLF, so the
         # value `sb get` reads back would not be the value that was declared.
         tmp.write_text(text, encoding="utf-8", newline="")
-        # The rendered config can carry TelnetPassword, and serveradmin.xml a
-        # level-0 admin list; keep both user-only. The temp carries the same
-        # content as the file it replaces, so replacing a 0600 file with one
-        # at the umask default would widen it to every local user.
+        # The temp carries the same content as the file it replaces, so
+        # replacing a 0600 file with one at the umask default would widen it to
+        # every local user.
         try:
-            tmp.chmod(mode)
+            tmp.chmod(0o600)
         except OSError as ex:
-            print(f"WARN: could not restrict {path} to {mode:04o}: {ex}", file=sys.stderr)
+            print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
         tmp.replace(path)
     except OSError as ex:
         # A failed write leaves a partial temp file in the instance's Saves
@@ -526,12 +519,7 @@ def _parse_sets(items: list[str]) -> dict[str, str]:
 
 def cmd_render(args: argparse.Namespace) -> int:
     try:
-        sets = _parse_sets(args.sets)
-    except ValueError as ex:
-        print(f"ERROR: {ex}", file=sys.stderr)
-        return 2
-    try:
-        render(args.src, args.dst, userdata=args.userdata, sets=sets)
+        render(args.src, args.dst, userdata=args.userdata, sets=_parse_sets(args.sets))
     except ValueError as ex:
         # A refused declaration: the value cannot be written as a property
         # this game would read back.
