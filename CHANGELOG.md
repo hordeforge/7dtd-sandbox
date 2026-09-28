@@ -140,6 +140,22 @@ Nothing is deprecated ahead of removal in this repository today.
   subshell and the server was launched with `-configfile=`.
 - A non-numeric or zero `STEAM_APPID` / `SERVER_APPID` is refused before the
   fetch instead of being handed to steamcmd's `app_update`.
+- `serveradmin.xml` is no longer rewritten with replacement characters where
+  it holds a byte that is not UTF-8. The seeder decoded with
+  `errors="replace"` and wrote the result back, so a latin-1 `José` became
+  `Jos��` on the next launch, permanently. Both files `sbconfig.py` writes
+  back are now decoded strictly and an undecodable one is reported instead.
+- An admin already in `serveradmin.xml` under a different spelling is rewritten
+  to the declared one. The game resolves an admin by exact `userid`, so an
+  entry left as `Istanbul` under a declaration of `istanbul` (or a decomposed
+  `Café`, which is what a macOS or Windows editor writes) granted level 0 to a
+  name no client sends, and the file stopped being a function of the
+  declaration alone. Matching is NFC then case-insensitive, as stock auth is.
+- `sb render-config` refuses a value containing a newline, which
+  `instance.props` would have read back as a second declaration.
+- A port block for an instance name carrying a byte that is not UTF-8 is now
+  derived instead of raising. Linux directory names may hold such bytes, and
+  `7dtd-loadgen` calls `sbconfig.py port-block` directly.
 
 ### Documentation
 

@@ -25,7 +25,13 @@ userid=<playername>; without a seed a Local join lands at permission 1000 and
 cannot run dm/givetools. The names are declared by the instance
 (`SERVER_ADMINS` in instance.env), never discovered from whatever other
 instances happen to exist on the machine: the same declaration must produce
-the same admin file on any host.
+the same admin file on any host. An entry that is already there is matched by
+folded name and rewritten to the declared spelling, id included, since the
+game looks an admin up by exact `userid`; matching one form and writing
+another is how a declared admin ends up admitted under a name no client
+sends. Every file this module rewrites is decoded strictly, and a file that
+is not valid UTF-8 is reported rather than rewritten with replacement
+characters in it.
 
 get prints the value of the first *active* property named KEY, so a caller
 reading a config back sees what the game will read, not a value that only
@@ -44,6 +50,7 @@ import argparse
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from xml.sax.saxutils import escape, unescape
 
@@ -189,15 +196,26 @@ def render(
 
 
 def fnv1a(text: str) -> int:
-    """FNV-1a 32-bit over the UTF-8 bytes of `text`."""
+    """FNV-1a 32-bit over the UTF-8 bytes of `text`.
+
+    `surrogateescape` because the name is often a directory name read from the
+    filesystem, where undecodable bytes are legal and arrive as lone
+    surrogates; re-encoding them throws away the very bytes two machines have
+    to agree on. With it, the hash is over exactly the bytes on disk.
+    """
     value = FNV_OFFSET_BASIS
-    for byte in text.encode("utf-8"):
+    for byte in text.encode("utf-8", "surrogateescape"):
         value = ((value ^ byte) * FNV_PRIME) & FNV_MASK
     return value
 
 
 def recorded_ports(instances: Path, exclude: str) -> set[int]:
-    """SERVER_PORT values other instances under `instances` already hold."""
+    """SERVER_PORT values other instances under `instances` already hold.
+
+    Decoded with `errors="replace"` on purpose, unlike every file this module
+    rewrites: an instance.env is read for its digits and never written back,
+    and a byte that will not decode cannot turn into one.
+    """
     taken: set[int] = set()
     if not instances.is_dir():
         return taken
@@ -240,40 +258,89 @@ def _user_line(name: str) -> str:
     )
 
 
+_USER_TAG = re.compile(r"<user\b[^>]*>")
+_PLATFORM_LOCAL = re.compile(r'\bplatform="Local"')
+_USER_ID = re.compile(r'\b(?:userid|name)="([^"]*)"')
+_ATTR = r'(\b%s=")([^"]*)(")'
+
+
+def admin_key(name: str) -> str:
+    """Comparison form of a declared admin name.
+
+    The game builds PltfmId `Local_<playername>` from the name the client
+    sent, so an entry is found by how a player reads their own name rather
+    than by raw bytes: NFC first (a name that reached a macOS filesystem or a
+    Windows tool arrives decomposed, and the two spellings are one name), then
+    case folding, which is case-insensitivity as the game means it.
+    `re.IGNORECASE` is not that: it never folds ß to ss, so `Straße` and
+    `strasse` stayed two admins under it.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _user_tag_for(text: str, name: str) -> re.Match[str] | None:
+    """The Local `<user ...>` tag for `name`, if the file has one.
+
+    Local only: a Steam or EOS entry carrying the same name is a different
+    identity, and raising its permission would not admit a Local join.
+    """
+    want = admin_key(name)
+    for match in _USER_TAG.finditer(text):
+        tag = match.group(0)
+        if not _PLATFORM_LOCAL.search(tag):
+            continue
+        values = _USER_ID.findall(tag)
+        if any(admin_key(unescape(v, {"&quot;": '"'})) == want for v in values):
+            return match
+    return None
+
+
 def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     """Force a level-0 Local entry for `name`. Returns (text, changed).
 
-    The lookup key is the escaped name, because that is what `_user_line`
-    wrote. Matching the raw name instead meant every launch of an instance
-    whose admin name contains &, < or " missed its own entry and appended a
-    second copy, so the file grew one duplicate per launch.
+    An existing entry is rewritten to the declared spelling, id included: the
+    game looks the admin up by exact `userid`, so leaving `userid="Istanbul"`
+    under a declaration of `istanbul` grants level 0 to a name no player
+    sends, and the file stops being a function of the declaration alone.
+
+    The lookup is by the folded name and by Local platform, so an entry is
+    found by how a player reads their own name rather than by raw bytes.
     """
-    pattern = re.compile(
-        r'(<user\b(?=[^>]*\bplatform="Local")(?=[^>]*\buserid="%s")[^>]*?/?>)'
-        % re.escape(xml_attr(name)),
-        re.IGNORECASE,
-    )
-    match = pattern.search(text)
+    match = _user_tag_for(text, name)
     if match is None:
         index = text.find(USERS_CLOSER)
         if index == -1:
             return text, False
         return text[:index] + _user_line(name) + "\n" + text[index:], True
 
-    old = match.group(1)
-    if 'permission_level="0"' in old:
-        return text, False
-    if re.search(r'permission_level="[^"]*"', old):
-        new = re.sub(r'permission_level="[^"]*"', 'permission_level="0"', old)
+    escaped = xml_attr(name)
+    old = match.group(0)
+    new = old
+    for attr in ("userid", "name"):
+        pattern = re.compile(_ATTR % attr)
+        if pattern.search(new):
+            new = pattern.sub(lambda m: m.group(1) + escaped + m.group(3), new, count=1)
+    permission = re.compile(_ATTR % "permission_level")
+    if permission.search(new):
+        new = permission.sub(lambda m: m.group(1) + "0" + m.group(3), new, count=1)
     else:
         # No permission_level at all: add it to whichever of the self-closing
         # and paired forms the depot shipped.
-        new = re.sub(r"\s*/?>$", ' permission_level="0" />', old)
-    return text[: match.start(1)] + new + text[match.end(1) :], True
+        new = re.sub(r"\s*/?>$", ' permission_level="0" />', new)
+    if new == old:
+        return text, False
+    return text[: match.start()] + new + text[match.end() :], True
 
 
 def seed_admins(out: Path, names: list[str]) -> bool:
-    """Create or upsert serveradmin.xml. Returns True when the file changed."""
+    """Create or upsert serveradmin.xml. Returns True when the file changed.
+
+    The file is decoded strictly, like the serverconfig template: it is
+    rewritten, so decoding it with `errors="replace"` would write the
+    replacement character over every byte it could not read, turning a
+    latin-1 `José` into a name no player can ever match, and do it on the next
+    launch rather than on the edit that caused it.
+    """
     users_block = "\n".join(_user_line(n) for n in names)
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file():
@@ -281,7 +348,14 @@ def seed_admins(out: Path, names: list[str]) -> bool:
         _restrict(out)
         return True
 
-    text = out.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+    try:
+        text = out.read_text(encoding="utf-8")
+    except UnicodeDecodeError as ex:
+        raise RuntimeError(
+            f"{out} is not valid UTF-8 ({ex}); refusing to rewrite it, because "
+            "the rewrite would replace the bad bytes and lose the names in them"
+        ) from ex
+    text = text.lstrip("\ufeff")
     if USERS_CLOSER not in text:
         # Malformed or unexpected shape: a rewrite from template is the only
         # way to guarantee the Local admins the sandbox contract promises.
@@ -318,10 +392,10 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         # The rendered config can carry TelnetPassword, and serveradmin.xml a
         # level-0 admin list; keep both user-only.
         try:
-            os.chmod(tmp, mode)
+            tmp.chmod(mode)
         except OSError as ex:
             print(f"WARN: could not restrict {path} to {mode:04o}: {ex}", file=sys.stderr)
-        os.replace(tmp, path)
+        tmp.replace(path)
     except OSError as ex:
         # A failed write leaves a partial temp file in the instance's Saves
         # tree. Nothing ever sweeps it, so a long-lived lab accumulates one per
@@ -360,7 +434,7 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
     try:
         changed = seed_admins(args.userdata / "Saves" / "serveradmin.xml", names)
     except (OSError, RuntimeError) as ex:
-        print(f"ERROR: cannot seed serveradmin.xml: {ex}", file=sys.stderr)
+        print(f"ERROR: {ex}", file=sys.stderr)
         return 1
     if changed:
         print(f"seeded serveradmin.xml (Local admins: {', '.join(names)})")
@@ -368,8 +442,14 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
 
 
 def cmd_get(args: argparse.Namespace) -> int:
+    # Strict like render, and for the same reason: the value printed here is
+    # read back by a caller deciding what the game will see, and a replacement
+    # character in it is indistinguishable from a character the config holds.
     try:
-        text = args.config.read_text(encoding="utf-8", errors="replace")
+        text = args.config.read_text(encoding="utf-8")
+    except UnicodeDecodeError as ex:
+        print(f"ERROR: {args.config} is not valid UTF-8: {ex}", file=sys.stderr)
+        return 1
     except OSError as ex:
         print(f"ERROR: cannot read {args.config}: {ex}", file=sys.stderr)
         return 1

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -313,6 +314,110 @@ def test_seed_rewrites_malformed_admin_file(tmp: Path) -> None:
     print("PASS seed_rewrites_malformed_admin_file")
 
 
+def test_seed_rewrites_a_differently_spelled_admin(tmp: Path) -> None:
+    """The file is folded to find an admin and written in the declared form.
+
+    A file carrying `Istanbul` (or a decomposed `Café`, which is what a
+    macOS or Windows editor writes) is one player, not two, and the game
+    looks an admin up by exact userid: leaving the old spelling in place
+    declares a name no client sends, and the declared admin lands at
+    permission 1000.
+    """
+    nfd = unicodedata.normalize("NFD", "Café")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Local" userid="Istanbul" name="Istanbul"'
+        ' permission_level="1000" />\n'
+        f'    <user platform="Local" userid="{nfd}" name="{nfd}"'
+        ' permission_level="1000" />\n'
+        "  </users>\n</adminTools>\n",
+        encoding="utf-8",
+    )
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "istanbul"]) == 0
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "Café"]) == 0
+    root = ET.fromstring(admin.read_text(encoding="utf-8"))
+    local = [u for u in root.iter("user") if u.get("platform") == "Local"]
+    by_id: dict[str, str | None] = {}
+    for user in local:
+        by_id.setdefault(user.get("userid", ""), user.get("permission_level"))
+    assert by_id.get("istanbul") == "0", by_id
+    assert by_id.get("Café") == "0", by_id
+    assert "Istanbul" not in by_id, by_id
+    assert not [u for u in local if u.get("userid", "").startswith("Cafe")], by_id
+    # Reseeding the same declaration must not churn the file.
+    before = admin.read_bytes()
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "istanbul"]) == 0
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "Café"]) == 0
+    assert admin.read_bytes() == before, "reseed rewrote an already-correct file"
+    print("PASS seed_rewrites_a_differently_spelled_admin")
+
+
+def test_seed_leaves_a_same_named_non_local_admin_alone(tmp: Path) -> None:
+    """A Steam entry is a different identity; raising it grants nothing."""
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    admin.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Steam" userid="admin" name="admin"'
+        ' permission_level="1000" />\n'
+        "  </users>\n</adminTools>\n",
+        encoding="utf-8",
+    )
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata")]) == 0
+    root = ET.fromstring(admin.read_text(encoding="utf-8"))
+    steam = [u for u in root.iter("user") if u.get("platform") == "Steam"]
+    assert [u.get("permission_level") for u in steam] == ["1000"], steam
+    print("PASS seed_leaves_a_same_named_non_local_admin_alone")
+
+
+def test_seed_refuses_a_non_utf8_admin_file(tmp: Path) -> None:
+    """A latin-1 admin name must not be rewritten into replacement characters.
+
+    Decoding with errors="replace" and writing the result back replaced every
+    undecodable byte with U+FFFD, so `José` became a name no player can match,
+    on the next launch rather than on the edit that caused it.
+    """
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    admin.parent.mkdir(parents=True)
+    original = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<adminTools>\n  <users>\n'
+        '    <user platform="Local" userid="José" name="José"'
+        ' permission_level="1000" />\n'
+        "  </users>\n</adminTools>\n"
+    ).encode("latin-1")
+    admin.write_bytes(original)
+    assert sbconfig.main(["seed-admins", str(tmp / "userdata"), "--name", "client-x"]) == 1
+    assert admin.read_bytes() == original, "a non-UTF-8 admin file was rewritten"
+    print("PASS seed_refuses_a_non_utf8_admin_file")
+
+
+def test_get_refuses_a_non_utf8_config(tmp: Path) -> None:
+    """`get` is how a caller reads back what the game will read."""
+    cfg = tmp / "latin1.xml"
+    cfg.write_bytes(
+        '<?xml version="1.0"?>\n<ServerSettings>\n'
+        '\t<property name="ServerName"\tvalue="Jos\xe9"/>\n'
+        "</ServerSettings>\n".encode("latin-1")
+    )
+    assert sbconfig.main(["get", str(cfg), "ServerName"]) == 1
+    print("PASS get_refuses_a_non_utf8_config")
+
+
+def test_port_block_hashes_an_undecodable_name(tmp: Path) -> None:
+    """A directory name with a byte that is not UTF-8 is a legal directory name.
+
+    Hashing it must not raise, and must stay the same value every time, or the
+    name cannot be reproduced on the machine that recorded it.
+    """
+    name = "we\udcffird"
+    first = sbconfig.port_block(name, set())
+    assert first == sbconfig.port_block(name, set()), "hash is not stable"
+    assert first >= sbconfig.PORT_BLOCK_BASE
+    print("PASS port_block_hashes_an_undecodable_name")
+
+
 TESTS = (
     test_rewrites_active_property,
     test_leaves_commented_property_commented,
@@ -335,6 +440,11 @@ TESTS = (
     test_get_reads_the_active_value,
     test_get_unescapes_what_render_escaped,
     test_seed_rewrites_malformed_admin_file,
+    test_seed_rewrites_a_differently_spelled_admin,
+    test_seed_leaves_a_same_named_non_local_admin_alone,
+    test_seed_refuses_a_non_utf8_admin_file,
+    test_get_refuses_a_non_utf8_config,
+    test_port_block_hashes_an_undecodable_name,
 )
 
 

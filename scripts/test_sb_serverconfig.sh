@@ -105,6 +105,26 @@ sb render-config srv-demo GameWorld=Pregen06k01 >/dev/null
 expect_eq "undeclared property returns to the base template" \
   "$(active_value "$cfg" MaxSpawnedZombies)" "64"
 
+# --- a declared key is a literal, not a pattern ---------------------------
+
+# The upsert filtered with `grep -v "^$key="`, so the key was a basic regular
+# expression: `.` in one key matched a neighbour's name and deleted a
+# declaration it had nothing to do with, and a key holding an unmatched `[`
+# made grep fail, which left instance.props holding only the key just
+# declared.
+sb render-config srv-demo 'Game.World=dot' >/dev/null
+sb render-config srv-demo 'GameWorld=dotted' >/dev/null
+expect_eq "key with a dot is applied"          "$(active_value "$cfg" Game.World)" "dot"
+expect_eq "key with a dot spares its neighbour" "$(active_value "$cfg" GameWorld)" "dotted"
+
+# instance.props is one KEY=VALUE per line, so a value carrying a newline is
+# two declarations, the second of which is not one. Refused at the point the
+# caller can still see which key it was.
+rc=0
+sb render-config srv-demo "$(printf 'GameWorld=two\nlines')" >/dev/null 2>&1 || rc=$?
+expect_eq "value spanning lines is refused"    "$rc" "2"
+expect_eq "refused value left the declaration" "$(active_value "$cfg" GameWorld)" "dotted"
+
 # --- the instance owns its ports and userdata; a caller may not declare them -
 
 for owned in ServerPort TelnetPort UserDataFolder; do

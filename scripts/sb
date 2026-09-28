@@ -624,7 +624,9 @@ apply_server_config() {
   local cfg="$inst/serverconfig.xml"
   local args=() line lineno=0
   if [[ -f "$inst/instance.props" ]]; then
-    while IFS= read -r line; do
+    # `|| [[ -n "$line" ]]`: instance.props is hand-editable, and a last line
+    # with no trailing newline is a declaration read, not one dropped.
+    while IFS= read -r line || [[ -n "$line" ]]; do
       lineno=$(( lineno + 1 ))
       [[ -z "$line" || "$line" == \#* ]] && continue
       validate_prop "$line" "$inst/instance.props:$lineno"
@@ -645,9 +647,14 @@ apply_server_config() {
 
 # Record declared properties into instance.props (upsert by key, last write
 # wins) so the next render includes them. Returns the file path.
+#
+# instance.props is a line format, so a value may not contain a newline: one
+# would be read back as a second declaration, and the render would then fail
+# on a fragment that is not KEY=VALUE. Refused here, at the point the caller
+# can still see which key it was.
 record_server_props() {
   local inst="$1"; shift
-  local props="$inst/instance.props" kv key owned
+  local props="$inst/instance.props" kv key owned line
   touch "$props"
   for kv in "$@"; do
     validate_prop "$kv"
@@ -655,10 +662,15 @@ record_server_props() {
     for owned in $INSTANCE_OWNED_PROPS; do
       [[ "$key" == "$owned" ]] && usage_err "$key is owned by the instance, not a caller (it allocated the ports and userdata path)"
     done
-    # A literal prefix match, not a regex: a key carrying `.` or `*` used to
-    # match (and drop) every other declaration, losing the instance's whole
-    # declared state to one `sb render-config` call.
-    awk -v p="$key=" 'index($0, p) != 1' "$props" > "$props.tmp"
+    # Upsert by literal prefix, read in the shell rather than through grep:
+    # a key carrying `.`, `*` or `[` used to match (and drop) every other
+    # declaration, losing the instance's whole declared state to one
+    # `sb render-config` call. A newline in the value is refused by
+    # validate_prop above: one declaration is one line.
+    : > "$props.tmp"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == "$key="* ]] || printf '%s\n' "$line" >> "$props.tmp"
+    done < "$props"
     printf '%s\n' "$kv" >> "$props.tmp"
     mv "$props.tmp" "$props"
   done

@@ -75,8 +75,8 @@ request. No game, no Proton, no steamcmd.
 
 | Gate | Pins |
 |---|---|
-| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically; admins come only from the declaration |
-| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused |
+| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, and a file that is not UTF-8 is reported rather than rewritten |
+| `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key is a literal, and a value spanning lines is refused |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout |
@@ -140,7 +140,7 @@ everything else is derived from them:
 | `instance.env` | identity, paths, the port block, `SERVER_ADMINS` (server), the window `SB_RES` / `SB_FULLSCREEN` (client) |
 | `instance.props` | the serverconfig properties this instance runs with (server) |
 
-Three properties follow, and each is gated:
+Every property below is gated:
 
 1. **The serverconfig is rebuilt, never edited.** `apply_server_config` renders
    the pristine base template plus `instance.props` plus the instance-owned
@@ -178,6 +178,18 @@ Three properties follow, and each is gated:
    `sb create-server <name> --admin NAME`, or edit `SERVER_ADMINS` and
    relaunch. A name outside `[A-Za-z0-9._-]` is refused (exit 2): the name
    reaches `instance.env`, which `sb env` hands to a caller that evaluates it.
+   A name already in `serveradmin.xml` is found by folded comparison (NFC,
+   then case-insensitive, as stock auth is) and rewritten to the declared
+   spelling, because the game looks an admin up by exact `userid`: an entry
+   left as `Istanbul` under a declaration of `istanbul` admits nobody.
+
+6. **Files are decoded strictly, and an undecodable one is never rewritten.**
+   `sbconfig.py` reads UTF-8 without a replacement fallback on every path it
+   writes back, so a latin-1 `serveradmin.xml` or serverconfig is reported
+   instead of being rewritten with U+FFFD where the bad bytes were, which
+   turns one hand-edit into a name no player can ever match on the next
+   launch. A read that never writes back (`recorded_ports`, which wants only
+   digits) stays tolerant on purpose.
 
 `sb wipe` clears `instance.props` with the rest of the state: a wiped instance
 is the base template again, not the last suite's world.
