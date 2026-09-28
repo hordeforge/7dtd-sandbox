@@ -140,6 +140,11 @@ Nothing is deprecated ahead of removal in this repository today.
 - `sb render-config` sorted `instance.props` in the caller's locale, so the
   same declarations landed in a different order under a different `LC_COLLATE`.
   The order carries no meaning and is byte order now.
+- `scripts/test_sb_ports.sh` sourced `instance_server_ports` out of `scripts/sb`
+  without the `instance.env` reader it calls, so every value it was asked to
+  judge came back empty and the gate asserted against blanks.
+- `scripts/test_sbconfig.py` referenced an `EXIT_FAILED` that was never
+  declared, which `ruff` (F821) refuses and the gate could not pass.
 - An interrupted run left what it owned in the instance tree. `sb` registers
   the staging tree a copy is written into, the tree it moves aside to replace
   one, the `instance.props` temp and the directory a create is half-building,
@@ -535,6 +540,26 @@ Nothing is deprecated ahead of removal in this repository today.
 - The property-key charset has one predicate, `prop_key_ok`. The two spellings
   it replaced disagreed about the leading underscore, and the one `validate_prop`
   does not use was called by nothing.
+- `sb` spent a process per declared value. The `instance.env` reader was back
+  to a `sed | tail` pair, and the bring-up paths call it a dozen times each
+  while `sb list` calls it twice per instance, so a sixty-instance host ran 240
+  of `sb list`'s 244 execs to answer a question bash already has. It reads the
+  file with the shell's own `read` again, and `instance_kind` /
+  `instance_marker` answer into a global rather than through a command
+  substitution, which was a subshell fork per instance per call. Measured on
+  that host: `sb list` 1.5s to 0.17s. The last declaration still wins and an
+  unreadable file still reads as empty.
+- The interpreter probe runs once per `sb` invocation rather than before every
+  render, port allocation and admin seed, and a declaration is checked for
+  valid UTF-8 with a glob when it is pure ASCII (which nearly every one is)
+  instead of an `iconv` fork. A non-ASCII value is checked exactly as before.
+- `sb stop` no longer sleeps out the full 3-second TERM grace on an instance
+  that is already down. The grace is polled against the same `/proc` scan that
+  found the pids, so it is a ceiling rather than a fixed cost; a wedged
+  instance is still KILLed after the same 3 seconds.
+- `sb render-config` validated every declaration twice, once before the port
+  check and once in the recorder that checks all of them before it writes any.
+  Only the recorder does it now.
 - The process scan behind `sb list`, `sb status`, `sb stop`, `sb wipe` and
   `sb destroy` reads every `/proc/<pid>/environ` in one `grep -z` pass instead
   of a `tr | grep` pair per process, and `sb list` asks for every instance's

@@ -487,8 +487,14 @@ EOF
 # Every serverconfig render, admin seed and port derivation shells out to
 # sbconfig.py, so an absent or too-old interpreter is not a bare
 # `command not found` halfway through `sb create-server`. Checked where the
-# interpreter is used, so `sb version` and `sb help` keep working without one.
+# interpreter is used, so `sb version` and `sb help` keep working without one,
+# and once per run after that, because the answer cannot change while `sb` runs.
+SB_PY_PROBED=0
 require_python() {
+  # A gate that sources this function out of the file (scripts/test_sb_ports.sh,
+  # scripts/test_sb_serveradmin.sh) takes the body without the declaration
+  # above it, so the memo is read defensively rather than unbound.
+  (( ${SB_PY_PROBED:-0} )) && return 0
   command -v "$SB_PY" >/dev/null 2>&1 \
     || die "$SB_PY not on PATH; sbconfig.py needs Python $SB_PY_MIN or newer"
   # The probe's own stderr is kept and reported. Discarding it (2>/dev/null)
@@ -497,10 +503,16 @@ require_python() {
   # venv whose python is a dangling symlink, a wrapper that exits nonzero for
   # its own reasons. The operator was told to install a newer Python for what
   # was really a broken interpreter.
+  #
+  # Once per run: the answer cannot change while `sb` runs, and a bring-up asks
+  # for it before every render, every port allocation and every admin seed, so
+  # the probe was an interpreter start per call on the paths that start a
+  # server.
   local why
   why="$("$SB_PY" -c 'import sys; sys.exit(sys.version_info < tuple(int(p) for p in sys.argv[1].split(".")))' \
         "$SB_PY_MIN" 2>&1)" \
     || die "$SB_PY cannot run the version probe; sbconfig.py needs Python $SB_PY_MIN or newer: ${why:-no output}"
+  SB_PY_PROBED=1
 }
 
 detect_proton() {
@@ -558,15 +570,22 @@ assert_contract_safe_root() {
 # last-one-wins settles a hand-edited duplicate before any reader of this file
 # ever sees it. `cmd_env` is the one reader that walks the file itself, because
 # it emits every declaration rather than one.
-# One sed, no second process to trim its output: the bring-up paths look up a
-# dozen keys each.
-# The trailing `|| true` is this function's return value, not noise: the file
-# is absent for an instance nothing has written a contract into yet, sed exits
-# 2, and under `set -o pipefail` a caller outside a command substitution (a
-# subshell would swallow it) takes the whole script down with it. "No such
-# key" is empty, the same answer as "no such line".
+# A bash read, no child process: the bring-up paths look this up a dozen times
+# each and `sb list` once or twice per instance, and the `sed | tail` pair this
+# replaces was a fork and an exec per lookup (240 of `sb list`'s 244 execs on a
+# sixty-instance host, which was the whole cost of the command). Last line
+# wins, as the `tail -1` did; an instance.env that is missing or unreadable
+# reads as empty, as it did.
 env_value() {
-  unquote_value "$(sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1 || true)"
+  local env_file="$1/instance.env" key="$2" line value=""
+  if [[ -f "$env_file" && -r "$env_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$key="* ]]; then
+        value="${line#"$key"=}"
+      fi
+    done < "$env_file"
+  fi
+  unquote_value "$value"
 }
 
 # The inverse of shquote: the value a sourcing shell would assign to a line
@@ -879,25 +898,28 @@ pids_for_markers() {
     | tr '\0' '\n' || true)
 }
 
-# Instance kind: 'server' for server instances, 'client' otherwise.
-instance_kind() {
-  local inst="$1"
-  if [[ "$(env_value "$inst" SERVER_KIND)" == server ]]; then
-    echo server
+# Instance kind, in INSTANCE_KIND: 'server' for server instances, 'client'
+# otherwise. A global rather than stdout because every caller wants it inside a
+# comparison, and `$(...)` around it is a subshell fork per instance, which
+# `sb list` pays twice over on every row.
+instance_kind() { # instance_kind <inst>
+  if [[ "$(env_value "$1" SERVER_KIND)" == server ]]; then
+    INSTANCE_KIND=server
   else
-    echo client
+    INSTANCE_KIND=client
   fi
 }
 
-# The environment marker that binds a process to this instance. Clients carry
-# their unique STEAM_COMPAT_DATA_PATH; server instances carry SB_INSTANCE (set
-# at launch). One place decides it, so a scan can ask for every instance's
-# marker in a single pass.
-instance_marker() {
-  if [[ "$(instance_kind "$1")" == server ]]; then
-    printf 'SB_INSTANCE=%s\n' "$1"
+# The environment marker that binds a process to this instance, in
+# INSTANCE_MARKER. Clients carry their unique STEAM_COMPAT_DATA_PATH; server
+# instances carry SB_INSTANCE (set at launch). One place decides it, so a scan
+# can ask for every instance's marker in a single pass.
+instance_marker() { # instance_marker <inst>; also sets INSTANCE_KIND
+  instance_kind "$1"
+  if [[ "$INSTANCE_KIND" == server ]]; then
+    INSTANCE_MARKER="SB_INSTANCE=$1"
   else
-    printf 'STEAM_COMPAT_DATA_PATH=%s/compatdata\n' "$1"
+    INSTANCE_MARKER="STEAM_COMPAT_DATA_PATH=$1/compatdata"
   fi
 }
 
@@ -906,6 +928,9 @@ instance_marker() {
 # consume (kill takes a pid, not a "<marker>\t<pid>" line).
 instance_procs() {
   local marker pid
+  # instance_marker answers into the global, so it is called rather than
+  # captured: a $(...) around it would fork and throw the marker away.
+  instance_marker "$1"
   # Sorted numerically: /proc is walked in readdir order, which is neither
   # numeric nor stable, so the pids of one instance came back in a different
   # order on every call. A teardown that TERMS and then KILLs in that order
@@ -917,7 +942,7 @@ instance_procs() {
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
     fi
-  done < <(pids_for_markers "$(instance_marker "$1")") | LC_ALL=C sort -n
+  done < <(pids_for_markers "$INSTANCE_MARKER") | LC_ALL=C sort -n
 }
 
 # --- client commands -------------------------------------------------------
@@ -1234,6 +1259,12 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
   # until the renderer encodes the file, so the declaration would be recorded
   # now and refused at every later render, leaving an instance that cannot apply
   # its own declared state. Refused where the caller can still see the key.
+  #
+  # An ASCII value is valid UTF-8 by construction, which is nearly every
+  # declaration, and the glob that proves it costs no process: the iconv below
+  # was a fork and an exec per declaration, on the path every server bring-up
+  # walks, revalidating the whole of instance.props each time.
+  [[ "$value" == *[![:ascii:]]* ]] || return 0
   # iconv is in the runtime image; without it the value is accepted and the
   # render names it, as before.
   if command -v iconv >/dev/null 2>&1; then
@@ -1575,6 +1606,13 @@ EOF
 # that a caller tearing down a wedged instance is not held up by it.
 TERM_GRACE_SEC=3
 
+# How often the grace is re-checked while it runs, in whole seconds (the
+# countdown below is shell integer arithmetic). The grace is a ceiling, not a
+# wait: a server that exits on TERM is gone within a second, and `sb stop` is
+# on the teardown path every harness times, so a flat sleep spent the whole
+# grace on an instance that was already down.
+TERM_POLL_SEC=1
+
 # How long a bring-up waits for the game port to accept, when the caller named
 # no --timeout. `sb up` is the harness form, so its default is the generous
 # one; `sb run both` launches a client behind the same wait, so it uses the
@@ -1589,16 +1627,22 @@ RUN_BOTH_PORT_WAIT_SEC=90
 terminate_instance() {
   local inst="$1"
   local pids
+  local grace_left="$TERM_GRACE_SEC"
   mapfile -t pids < <(instance_procs "$inst")
   (( ${#pids[@]} )) || return 0
   echo "stopping instance (pids: ${pids[*]})"
   kill -TERM "${pids[@]}" 2>/dev/null || true
-  sleep "$TERM_GRACE_SEC"
-  mapfile -t pids < <(instance_procs "$inst")
-  if (( ${#pids[@]} > 0 )); then
-    echo "still alive, sending KILL: ${pids[*]}"
-    kill -KILL "${pids[@]}" 2>/dev/null || true
-  fi
+  # Polled, not slept: the same /proc scan that found the pids is what says they
+  # are gone, so the grace is the longest this waits rather than what it always
+  # costs, and an instance that is already down is not held for the rest of it.
+  while (( grace_left > 0 )); do
+    sleep "$TERM_POLL_SEC"
+    grace_left=$(( grace_left - TERM_POLL_SEC ))
+    mapfile -t pids < <(instance_procs "$inst")
+    (( ${#pids[@]} )) || return 0
+  done
+  echo "still alive, sending KILL: ${pids[*]}"
+  kill -KILL "${pids[@]}" 2>/dev/null || true
 }
 
 cmd_destroy() {
@@ -1623,9 +1667,10 @@ cmd_destroy() {
 }
 
 cmd_wipe() {
-  local name="$1" inst kind
+  local name="$1" inst
   inst="$(instance_dir "$name")"
-  kind="$(instance_kind "$inst")"
+  instance_kind "$inst"
+  local kind="$INSTANCE_KIND"
   local pids
   pids="$(instance_procs "$inst")"
   if [[ -n "$pids" ]]; then
@@ -1667,17 +1712,18 @@ cmd_list() {
   [[ -d "$INSTANCES_DIR" ]] || { echo "(no instances; run 'sb create <name>')"; return 0; }
   # One /proc pass for every instance, not one per row: the running state of
   # each instance is one more marker for the same scan.
-  local d name kind marker pid i count running
+  local d name marker pid i count running
   local -a dirs=() names=() kinds=() markers=()
   for d in "$INSTANCES_DIR"/*/; do
     [[ -d "$d" ]] || continue
     d="${d%/}"
     dirs+=("$d")
     names+=("${d##*/}")
-    kind="$(instance_kind "$d")"
-    kinds+=("$kind")
-    marker="$(instance_marker "$d")"
-    markers+=("$marker")
+    # instance_marker decides the kind too, so the row costs one call and no
+    # subshell, where two calls through $(...) forked twice per instance.
+    instance_marker "$d"
+    kinds+=("$INSTANCE_KIND")
+    markers+=("$INSTANCE_MARKER")
   done
   ((${#dirs[@]})) || { echo "(no instances; run 'sb create <name>')"; return 0; }
   declare -A counts=()
@@ -1692,9 +1738,10 @@ cmd_list() {
 }
 
 cmd_status() {
-  local name="$1" inst kind
+  local name="$1" inst
   inst="$(instance_dir "$name")"
-  kind="$(instance_kind "$inst")"
+  instance_kind "$inst"
+  local kind="$INSTANCE_KIND"
   echo "instance:   $name ($kind)"
   echo "dir:        $inst"
   echo "running:    $(instance_running "$inst")"
@@ -1723,9 +1770,10 @@ emit_export() {
 }
 
 cmd_env() {
-  local name="$1" inst kind
+  local name="$1" inst
   inst="$(instance_dir "$name")"
-  kind="$(instance_kind "$inst")"
+  instance_kind "$inst"
+  local kind="$INSTANCE_KIND"
   if [[ "$kind" == server ]]; then
     # A bare `KEY=value` line defines a shell variable but does not export it,
     # so a server contract read this way was invisible to every child process a
@@ -1768,7 +1816,8 @@ cmd_launch() {
   local name="$1"; shift || true
   local inst
   inst="$(instance_dir "$name")"
-  if [[ "$(instance_kind "$inst")" == server ]]; then
+  instance_kind "$inst"
+  if [[ "$INSTANCE_KIND" == server ]]; then
     die "'$name' is a server instance; use 'sb launch-server $name'"
   fi
   local game="$inst/game" compat="$inst/compatdata"
@@ -1835,7 +1884,7 @@ cmd_stop() {
 }
 
 cmd_logs() {
-  local name="$1" inst kind follow=""
+  local name="$1" inst follow=""
   [[ $# -ge 1 ]] && shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1845,9 +1894,9 @@ cmd_logs() {
     shift
   done
   inst="$(instance_dir "$name")"
-  kind="$(instance_kind "$inst")"
+  instance_kind "$inst"
   local logfile
-  if [[ "$kind" == server ]]; then
+  if [[ "$INSTANCE_KIND" == server ]]; then
     logfile="$inst/logs/server.log"
   else
     logfile="$inst/logs/output_log_client.txt"
@@ -2124,16 +2173,17 @@ cmd_stage() {
 # declared now, not on what a previous run left behind.
 cmd_render_config() {
   local name="$1"; shift || true
-  local inst kv
+  local inst
   inst="$(instance_dir "$name")"
-  for kv in "$@"; do
-    validate_prop "$kv"
-  done
   # The port pair is checked before anything is recorded, not after. Rendering
   # needs it, and a hand-edited instance.env that fails the check left the
   # declarations already written to instance.props with no rendered config
   # behind them: the file claimed a world the next launch would then apply,
   # while this call had exited with nothing rendered.
+  #
+  # The declarations themselves are validated by record_server_props, which
+  # checks all of them before it writes any; validating them here as well read
+  # the same list twice for a check whose answer cannot differ.
   instance_server_ports "$inst"
   record_server_props "$inst" "$@"
   local port="$SERVER_PORT" telnet_port="$SERVER_TELNET_PORT"
