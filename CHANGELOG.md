@@ -82,6 +82,15 @@ Nothing is deprecated ahead of removal in this repository today.
   to that uid. The `fetch` image stays root: steamcmd writes into the tree the
   base image primed under `/root`, and `make fetch-base-docker` chowns the
   bind-mounted `base/` back to the caller through `--entrypoint chown`.
+- `sb launch` told the game to write `output_log_sandbox.txt` while every other
+  surface named `output_log_client.txt`: the `LOGFILE` an instance declares and
+  exports, the `sb status` and `sb logs` paths, and the test fixture. A running
+  client therefore had no log at the path the contract names, and `sb logs
+  <client>` died with "no log yet". The game writes the declared name now.
+- A hand-edited `instance.env` with two declarations of one key was read two
+  different ways: `sb env` exported both, so the caller's shell settled on the
+  last, while every reader in `sb` read the first. They read the last now, which
+  is what "edit it and relaunch" already did for the caller.
 - `sb up` and `sb run both` took their port-wait deadline from the wall clock,
   so an NTP step ended the wait early or extended it by the size of the step
   instead of running the requested `--timeout`. The deadline is elapsed time

@@ -138,9 +138,11 @@ validate_name() {
 # One declared value from an instance's instance.env, or empty. Every reader
 # goes through here, so a key is looked up the same way everywhere: last
 # declaration wins, a missing key reads as empty rather than as the comment
-# lines that surround it.
+# lines that surround it. Last wins because that is what `sb env` hands the
+# caller: it exports every declaration, so the shell's own last-one-wins
+# settles a hand-edited duplicate before any reader of this file ever sees it.
 instance_env_value() {
-  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
+  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
@@ -187,19 +189,6 @@ instance_dir() {
   local inst="$INSTANCES_DIR/$1"
   [[ -d "$inst" ]] || usage_err "instance '$1' not found (create it with 'sb create $1' or 'sb create-server $1')"
   echo "$inst"
-}
-
-# One key's value from an instance.env, empty when the key is absent.
-env_value() {
-  sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
-}
-
-# An instance-owned key the bring-up cannot proceed without.
-require_env_value() {
-  local inst="$1" key="$2" value
-  value="$(env_value "$inst" "$key")"
-  [[ -n "$value" ]] || die "no $key in $inst/instance.env (recreate the instance)"
-  echo "$value"
 }
 
 copy_tree() {
@@ -1049,7 +1038,10 @@ cmd_launch() {
     validate_window "$res" "$fullscreen"
     read -r -a win_args < <(screen_args "$res" "$fullscreen")
   fi
-  local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_sandbox.txt"
+  # The prefix's logs dir is a symlink to $inst/logs (link_prefix_logs), so
+  # this name is the host path instance.env declares as LOGFILE and the one
+  # `sb logs`, `sb status` and a sibling harness reading $LOGFILE look for.
+  local win_log="C:/users/steamuser/AppData/Roaming/7DaysToDie/logs/output_log_client.txt"
   echo "sandbox:   $name"
   echo "proton:    $PROTON"
   echo "game:      $game"
