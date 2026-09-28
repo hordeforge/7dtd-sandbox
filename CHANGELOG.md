@@ -42,6 +42,11 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- `sb up` and `sb run both` took their port-wait deadline from the wall clock,
+  so an NTP step ended the wait early or extended it by the size of the step
+  instead of running the requested `--timeout`. The deadline is elapsed time
+  read from the kernel's uptime counter now, and
+  `scripts/test_sb_up.py` pins the port wait to a monotonic source.
 - 0.2.0 shipped the client-window change as an unlabelled entry under `Fixed`,
   so the one breaking consumer change in that release (a client now follows
   the instance's `SB_RES` / `SB_FULLSCREEN` declaration instead of an ambient

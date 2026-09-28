@@ -209,10 +209,28 @@ def test_up_fails_inside_its_timeout_and_names_the_log(tmp: Path) -> None:
     print("PASS up_fails_inside_its_timeout_and_names_the_log")
 
 
+def test_the_wait_deadline_is_monotonic(tmp: Path) -> None:
+    """The bring-up deadline is a duration, so it is not read off the wall clock.
+
+    A wall-clock deadline ends the wait early on a forward NTP step and extends
+    it by the size of a backward step, and neither outcome is the --timeout the
+    harness asked for. The kernel's uptime counter cannot be stepped.
+    """
+    source = SB.read_text(encoding="utf-8")
+    body = source.split("wait_for_port() {", 1)[1].split("\n}", 1)[0]
+    assert "date" not in body, f"the port wait reads a clock through date: {body!r}"
+    assert "monotonic_now" in body, "the port wait must take its deadline from monotonic_now"
+    assert "date" not in source.split("monotonic_now() {", 1)[1].split("\n}", 1)[0], (
+        "monotonic_now must not fall back to the wall clock"
+    )
+    print("PASS the_wait_deadline_is_monotonic")
+
+
 TESTS = (
     test_up_returns_and_orphans_the_server,
     test_up_refuses_an_instance_already_running,
     test_up_fails_inside_its_timeout_and_names_the_log,
+    test_the_wait_deadline_is_monotonic,
 )
 
 

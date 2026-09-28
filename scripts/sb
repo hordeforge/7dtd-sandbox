@@ -1059,14 +1059,27 @@ start_server_detached() {
         </dev/null >"$inst/logs/server.stdout.log" 2>&1 )
 }
 
+# Whole seconds since boot, read from the kernel. A deadline taken from the
+# wall clock is not a duration: an NTP step forward ends the wait early, a
+# step backward extends it by the size of the step, and neither is the
+# --timeout the caller asked for. /proc/uptime counts uptime, is already a
+# dependency of this script (instance_procs walks /proc/<pid>/environ), and
+# truncating to whole seconds cancels out between the two readings of one wait.
+monotonic_now() {
+  local uptime
+  read -r uptime _ </proc/uptime || die "cannot read /proc/uptime (needed for a monotonic timeout)"
+  printf '%s' "${uptime%%.*}"
+}
+
 # Block until a TCP port accepts connections, or die after a timeout. The
 # server logs "Telnet on <port>" and starts listening on <port>+0 well
 # before the world is fully generated; clients that auto-join usually finish
 # loading by then too.
 wait_for_port() {
   local host="$1" port="$2" timeout="${3:-90}"
-  local end=$(( $(date +%s) + timeout ))
-  while (( $(date +%s) < end )); do
+  local start
+  start="$(monotonic_now)"
+  while (( $(monotonic_now) - start < timeout )); do
     # The connection is opened in a subshell, so the socket closes with it.
     if (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null; then
       return 0
