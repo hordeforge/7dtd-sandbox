@@ -20,8 +20,8 @@ they manage is [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 - **Credentials are never a build input.** No `ARG`, no `ENV`, no secret file
   copied into a layer: `docker history` prints build arguments and environment
   back out of any image that has them, so a credential baked at build time is a
-  credential published with the image. The `fetch` image contains steamcmd and
-  nothing else.
+  credential published with the image. The `fetch` image contains steamcmd,
+  `sb` and `sbconfig.py`, and nothing that takes a secret.
 - **The credentialed fetch is interactive, at run time.**
   `make fetch-base-docker` runs the container with a TTY so steamcmd prompts
   for the password and the Steam Guard code. Only the account name crosses the
@@ -42,8 +42,9 @@ they manage is [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 - **Nothing goes through argv.** The process table is world-readable on a
   normal Linux host, so a password on a command line is a password every local
   user can read. `sb` passes secrets as environment or file content only, and
-  refuses the one input (the Steam password) that would have to go through
-  argv.
+  refuses the one input that would have to go through argv: `STEAMCMD_PASS` is
+  rejected with exit 2 before the fetch does anything, rather than being
+  quietly dropped.
 - **A Local admin name is not shell code.** `SERVER_ADMINS` is written into
   `instance.env`, which callers `source` and which `sb env` prints for `eval`.
   Admin names are charset-validated before they are written, so a name cannot
