@@ -8,6 +8,8 @@ insert-if-missing path, and the admin upsert. Part of ``make test``.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unicodedata
@@ -418,6 +420,28 @@ def test_port_block_hashes_an_undecodable_name(tmp: Path) -> None:
     print("PASS port_block_hashes_an_undecodable_name")
 
 
+def test_refuses_an_interpreter_below_the_declared_floor(tmp: Path) -> None:
+    """A host python3 older than the floor is refused by name.
+
+    `sb` shells out to whatever python3 the distribution ships, so the floor
+    is only useful if the module itself enforces it instead of failing later
+    inside a render.
+    """
+    saved = sbconfig.sys.version_info
+    try:
+        sbconfig.sys.version_info = (
+            sbconfig.MIN_PYTHON[0],
+            sbconfig.MIN_PYTHON[1] - 1,
+            0,
+        )
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = sbconfig.main(["port-block", "lab"])
+    finally:
+        sbconfig.sys.version_info = saved
+    assert rc == EXIT_USAGE, f"expected a refusal ({EXIT_USAGE}), got {rc}"
+    assert "needs Python" in err.getvalue(), err.getvalue()
+
+
 TESTS = (
     test_rewrites_active_property,
     test_leaves_commented_property_commented,
@@ -445,6 +469,7 @@ TESTS = (
     test_seed_refuses_a_non_utf8_admin_file,
     test_get_refuses_a_non_utf8_config,
     test_port_block_hashes_an_undecodable_name,
+    test_refuses_an_interpreter_below_the_declared_floor,
 )
 
 

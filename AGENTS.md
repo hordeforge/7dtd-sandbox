@@ -75,12 +75,12 @@ request. No game, no Proton, no steamcmd.
 
 | Gate | Pins |
 |---|---|
-| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared, and a file that is not UTF-8 is reported rather than rewritten |
+| `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically (including a name carrying a byte that is not UTF-8); admins come only from the declaration, spelled as declared; a file that is not UTF-8 is reported rather than rewritten; an interpreter below `MIN_PYTHON` is refused by name |
 | `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused; a key is a literal, and a value spanning lines is refused |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout |
-| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused |
+| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused; the declared python floor in `sb` and `MIN_PYTHON` in `sbconfig.py` are one number, a missing interpreter is named, and a caller-supplied `-screen-` argument is still recognised |
 | `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
 
 ## Sibling projects
@@ -313,7 +313,9 @@ verbs all fail. `scripts/test_dockerfile.py` gates all of this statically, so
 CI needs no docker.
 
 Game data, instances and Proton stay on the host (bind mounts); neither image
-contains game files. Ports are not published. Known limitation: the dockerized
+contains game files. Ports are not published. `docker-gui.sh` forwards a
+Linux host's X11 socket, `/dev/dri` and `$XAUTHORITY`, and refuses a host that
+has none of them by name, rather than leaving docker to fail on the bind. Known limitation: the dockerized
 client hangs during early Unity init (see README); use the native
 `sb run client` for reaching the menu.
 

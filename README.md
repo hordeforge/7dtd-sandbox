@@ -29,6 +29,12 @@ shellcheck (`.shellcheckrc`) over the shell, `ruff check` and
 compileall`. Shellcheck and ruff are both required rather than skipped when
 CI cannot find them. `make format` applies ruff's formatting.
 
+Requirements: a Linux host (x86-64), `bash`, and `python3` 3.7 or newer on
+`PATH` for `scripts/sbconfig.py` (the serverconfig renderer, admin seeder and
+port derivation all run through it; `sb doctor` reports the interpreter it
+found). The client additionally needs Proton from a Steam install, the server
+only the dedicated base.
+
 No coverage badge: `sb` is bash and would need kcov, which CI does not run.
 `make coverage` says so rather than producing a number nothing regenerates.
 
@@ -264,6 +270,11 @@ The game window appears on the desktop and GPU rendering works (`AMD Radeon RX
 hangs during early Unity init inside the container (log stops after `Input
 initialized`), so the native `sb run client` remains the supported path for
 reaching the main menu.
+
+`scripts/docker-gui.sh` forwards a Linux host's X11 socket, `/dev/dri` and
+`$XAUTHORITY`, so it needs all of them: a Docker Desktop or GPU-less host gets
+a refusal naming what is missing rather than a container that cannot open a
+window.
 
 ## Notes
 

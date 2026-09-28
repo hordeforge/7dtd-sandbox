@@ -383,6 +383,31 @@ fi
 check "fetch bad flag dies"     2 "$SB" fetch-base --nonsense
 check "fetch-server bad flag"   2 "$SB" fetch-server-base --nonsense
 
+# --- interpreter contract ----------------------------------------------------
+
+# One floor, declared twice (sb checks before it shells out, sbconfig checks
+# its own process). A drift between them means sb either refuses a supported
+# interpreter or hands an unsupported one work, so they are pinned equal.
+sb_floor="$(sed -n 's/^SB_PY_MIN="\(.*\)"$/\1/p' "$SB" | head -1)"
+py_floor="$(sed -n 's/^MIN_PYTHON = (\(.*\))$/\1/p' "$ROOT/scripts/sbconfig.py" | head -1)"
+expected_floor="$(tr -d '() ' <<<"$py_floor" | tr ',' '.')"
+expect_eq "sb and sbconfig.py declare one python floor" "$sb_floor" "$expected_floor"
+
+# A missing interpreter is named, not surfaced as `command not found` from the
+# middle of a create-server.
+no_py="$(env SANDBOX_HOME="$TMP" SB_PY=sbconfig.py-no-such-interpreter "$SB" render-config srv-t GameWorld=Navezgane 2>&1 || true)"
+grep -qF "not on PATH" <<<"$no_py" \
+  || { echo "FAIL: a missing interpreter was not named: $no_py" >&2; fail=1; }
+
+# The launch path recognises a caller-supplied -screen-* argument with a bash
+# scan, so no GNU-only null-input grep sits between sb and the game.
+# shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
+source /dev/stdin <<<"$(sed -n '/^has_screen_arg()/,/^}/p' "$SB")"
+has_screen_arg -connect=1.2.3.4 -screen-width 800 && screen_seen=yes || screen_seen=no
+expect_eq "-screen- arg detected" "$screen_seen" "yes"
+has_screen_arg -connect=1.2.3.4 && screen_seen=yes || screen_seen=no
+expect_eq "no -screen- arg detected" "$screen_seen" "no"
+
 if [[ "$fail" -ne 0 ]]; then
   echo "sb_cli: FAILED" >&2
   exit 1

@@ -27,6 +27,13 @@ STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
 # Beside this script, not under SANDBOX_HOME: a caller may point
 # SANDBOX_HOME at any instance root and sb must still find its own helper.
 SB_CONFIG="${SB_CONFIG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sbconfig.py}"
+# Interpreter for sbconfig.py, looked up on PATH: never a hardcoded
+# /usr/bin/python3, because a venv, a pyenv shim or a distribution that ships
+# python3.13 under that name is the ordinary case.
+SB_PY="${SB_PY:-python3}"
+# Oldest interpreter sbconfig.py supports, mirrored in its MIN_PYTHON and
+# pinned equal by scripts/test_sb_cli.sh.
+SB_PY_MIN="3.7"
 
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for usage / missing-instance / bad-flag paths (test_sb_cli contract).
@@ -79,8 +86,10 @@ Underlying commands (full control):
 Standard env: SANDBOX_HOME, SANDBOX_INSTANCES, SANDBOX_BASE_GAME,
 SANDBOX_SERVER_BASE_GAME, SANDBOX_STEAMCMD, STEAM_APPID, SERVER_APPID,
 STEAM_ROOT, PROTON, GFX_API, SB_RES (default 1280x720),
-SB_FULLSCREEN (default 0=windowed), SB_CONFIG, STEAMCMD_USER,
-7DTD_PLAYER_NAME, STEAM_SEED_SOURCE, FASTCONNECT_DIST.
+SB_FULLSCREEN (default 0=windowed), SB_CONFIG, SB_PY (default python3, needs
+3.7+), STEAMCMD_USER, 7DTD_PLAYER_NAME, STEAM_SEED_SOURCE, FASTCONNECT_DIST.
+
+Host: Linux, bash, and that python3 on PATH (sb doctor reports both).
 
 Credentials: STEAMCMD_USER is the account name; the password is never read
 from the environment (it would have to reach steamcmd as an argument, which
@@ -89,6 +98,18 @@ EOF
 }
 
 # --- detection -------------------------------------------------------------
+
+# Every serverconfig render, admin seed and port derivation shells out to
+# sbconfig.py, so an absent or too-old interpreter is not a bare
+# `command not found` halfway through `sb create-server`. Checked where the
+# interpreter is used, so `sb version` and `sb help` keep working without one.
+require_python() {
+  command -v "$SB_PY" >/dev/null 2>&1 \
+    || die "$SB_PY not on PATH; sbconfig.py needs Python $SB_PY_MIN or newer"
+  "$SB_PY" -c 'import sys; sys.exit(sys.version_info < tuple(int(p) for p in sys.argv[1].split(".")))' \
+    "$SB_PY_MIN" 2>/dev/null \
+    || die "$SB_PY is older than $SB_PY_MIN; sbconfig.py needs Python $SB_PY_MIN or newer"
+}
 
 detect_proton() {
   if [[ -n "${PROTON:-}" ]]; then
@@ -240,7 +261,8 @@ seed_sandbox_admins() {
     [[ -n "$name" ]] && args+=(--name "$name")
   done
   unset IFS
-  python3 "$SB_CONFIG" seed-admins "$inst/userdata" "${args[@]}"
+  require_python
+  "$SB_PY" "$SB_CONFIG" seed-admins "$inst/userdata" "${args[@]}"
 }
 
 
@@ -426,7 +448,8 @@ cmd_fetch_server_base() {
 # reproduce the run elsewhere. A block another instance already recorded is
 # skipped by a deterministic forward probe.
 alloc_server_ports() {
-  python3 "$SB_CONFIG" port-block "$1" --instances "$INSTANCES_DIR"
+  require_python
+  "$SB_PY" "$SB_CONFIG" port-block "$1" --instances "$INSTANCES_DIR"
 }
 
 # Local player names this server admits as permission_level=0. Declared once at
@@ -634,7 +657,8 @@ apply_server_config() {
     done < "$inst/instance.props"
   fi
   # Instance-owned values go last so a declared property cannot win over them.
-  python3 "$SB_CONFIG" render "$inst/game/serverconfig.xml" "$cfg" \
+  require_python
+  "$SB_PY" "$SB_CONFIG" render "$inst/game/serverconfig.xml" "$cfg" \
     --userdata "$inst/userdata" \
     "${args[@]}" \
     --set "ServerPort=$port" \
@@ -688,6 +712,13 @@ cmd_init() {
   echo "PROTON=$PROTON"
   echo "STEAM_ROOT=$STEAM_ROOT"
   echo "steamcmd: $([ -x "$STEAMCMD_DIR/steamcmd.sh" ] && echo ok || echo missing)"
+  # Readiness report, so a bad interpreter is named here rather than by the
+  # first create/up that shells out to sbconfig.py.
+  if command -v "$SB_PY" >/dev/null 2>&1; then
+    echo "python:   $("$SB_PY" -V 2>&1) (need $SB_PY_MIN+)"
+  else
+    echo "python:   missing ($SB_PY not on PATH; need $SB_PY_MIN+)"
+  fi
 }
 
 cmd_doctor() {
@@ -1012,7 +1043,7 @@ cmd_launch() {
     *) die "GFX_API must be d3d11, d3d12, vulkan, glcore or none (got '$gfx_api')" ;;
   esac
   local win_args=()
-  if ! printf '%s\0' "$@" | grep -qz -- '-screen-'; then
+  if ! has_screen_arg "$@"; then
     local res fullscreen
     read -r res fullscreen < <(declared_window "$inst")
     validate_window "$res" "$fullscreen"
@@ -1082,6 +1113,20 @@ validate_window() {
   local res="$1" fullscreen="$2"
   [[ "$res" =~ ^[0-9]+x[0-9]+$ ]] || die "SB_RES must look like 1920x1080 (got '$res')"
   case "$fullscreen" in 0|1) ;; *) die "SB_FULLSCREEN must be 0 or 1 (got '$fullscreen')" ;; esac
+}
+
+# True when the caller's game args already carry a -screen-* argument, so the
+# declared window is not added on top. A bash scan rather than
+# `printf '%s\0' | grep -z`: NUL-separated input is a GNU extension, and a
+# client launch should not be the one path that needs it.
+has_screen_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      *-screen-*) return 0 ;;
+    esac
+  done
+  return 1
 }
 
 # The window this instance declared, as "<res> <fullscreen>". Read from its

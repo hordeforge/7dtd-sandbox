@@ -27,7 +27,9 @@ expect_eq() {
 }
 
 # shellcheck disable=SC1090,SC1091 # extract alloc_server_ports without running main
-source /dev/stdin <<<"$(sed -n '/^alloc_server_ports()/,/^}/p' "$SB")"
+# The interpreter check travels with it: allocating a block shells out to
+# sbconfig.py, so the helper under test now needs its interpreter too.
+source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^alloc_server_ports()/,/^}/p' "$SB")"
 
 # --- a name determines its block --------------------------------------------
 

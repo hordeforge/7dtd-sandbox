@@ -70,6 +70,12 @@ PORT_BLOCK_COUNT = 100
 # FNV-1a 32-bit: a stable hash across interpreters and machines. Python's own
 # hash() is salted per process, so it would hand the same instance a different
 # port on every run.
+# Oldest interpreter this module supports. It is the only Python in the tree,
+# and `sb` shells out to whatever `python3` the host ships, which on an older
+# distribution is older than anything here was ever run against. Declared so
+# `sb` can refuse with a version instead of failing inside a call.
+MIN_PYTHON = (3, 7)
+
 FNV_OFFSET_BASIS = 0x811C9DC5
 FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
@@ -474,6 +480,14 @@ def cmd_port_block(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < MIN_PYTHON:
+        floor = ".".join(str(part) for part in MIN_PYTHON)
+        running = ".".join(str(part) for part in sys.version_info[:2])
+        print(
+            f"sbconfig.py needs Python {floor}+, this is {running}",
+            file=sys.stderr,
+        )
+        return 2
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 

@@ -12,7 +12,9 @@ were wrong before and would be easy to undo:
   whose create/up/render-config/wipe verbs all fail,
 - every base is pinned by digest, for the same reason the workflows pin actions
   by commit SHA: a moved tag is unreviewed code,
-- neither image contains game files.
+- neither image contains game files,
+- `docker-gui.sh` states the host it forwards from (Linux, an X11 socket, a
+  GPU render node) instead of letting a bind mount fail deep inside docker.
 
 Part of ``make test``.
 """
@@ -25,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "Dockerfile.safehouse"
+DOCKER_GUI = ROOT / "scripts" / "docker-gui.sh"
 
 FROM_RE = re.compile(r"^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$", re.MULTILINE | re.IGNORECASE)
 
@@ -149,6 +152,19 @@ def test_helper_scripts_are_executable_in_the_image() -> None:
     print("PASS helper_scripts_are_executable_in_the_image")
 
 
+def test_docker_gui_names_its_host_requirements() -> None:
+    """The GUI path binds host paths a non-Linux or GPU-less host lacks.
+
+    Without a preflight, `docker run` reports a missing device or silently
+    turns a missing source into a directory, so each host assumption is
+    checked (and named in the message) before the container starts.
+    """
+    text = DOCKER_GUI.read_text(encoding="utf-8")
+    for required in ("uname -s", "/dev/dri", "/tmp/.X11-unix", "DISPLAY"):
+        assert required in text, f"docker-gui.sh does not check {required}"
+    print("PASS docker_gui_names_its_host_requirements")
+
+
 TESTS = (
     test_two_targets_exist,
     test_every_base_is_pinned_by_digest,
@@ -157,6 +173,7 @@ TESTS = (
     test_both_images_ship_the_config_helper,
     test_no_game_files_are_baked_in,
     test_helper_scripts_are_executable_in_the_image,
+    test_docker_gui_names_its_host_requirements,
 )
 
 

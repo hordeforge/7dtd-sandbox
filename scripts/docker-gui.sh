@@ -14,6 +14,21 @@ PROTON_REL="steamapps/common/Proton - Experimental/proton"
 
 die() { echo "docker-gui: $*" >&2; exit 1; }
 
+# The host requirements, checked here rather than discovered as a docker
+# error: this path binds the host X11 socket, a GPU render node and a few
+# /etc files, none of which a Docker Desktop or a GPU-less WSL2 host has, and
+# an empty bind source would silently become a directory inside the container.
+[[ "$(uname -s)" == "Linux" ]] \
+  || die "needs a Linux host (X11 socket, /dev/dri); $(uname -s) cannot forward either"
+[[ -n "${DISPLAY:-}" ]] || die "DISPLAY is unset; this runs a GUI client"
+[[ -d /dev/dri ]] \
+  || die "no /dev/dri on this host; the runtime image needs a GPU render node (or a WSL2 host passing one through)"
+[[ -d /tmp/.X11-unix ]] \
+  || die "no /tmp/.X11-unix; the host X server socket is not reachable from a container"
+for hostfile in /etc/passwd /etc/group; do
+  [[ -r "$hostfile" ]] || die "$hostfile unreadable; the container runs as the host uid and needs it"
+done
+
 [[ -x "$STEAM_ROOT/$PROTON_REL" ]] || die "Proton not found at $STEAM_ROOT/$PROTON_REL"
 command -v docker >/dev/null || die "docker not on PATH"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE missing; run: docker build --target runtime -t $IMAGE -f Dockerfile.safehouse ."
@@ -26,6 +41,10 @@ fi
 
 devices=( --device /dev/dri )
 [[ -e /dev/ntsync ]] && devices+=( --device /dev/ntsync )
+# Wine reads the host machine id; a host without /etc/machine-id gets no bind
+# rather than a root-owned directory docker creates in its place.
+machine_id_args=()
+[[ -r /etc/machine-id ]] && machine_id_args+=( -v /etc/machine-id:/etc/machine-id:ro )
 # Host render node is world-writable; video is needed for /dev/dri/card*.
 # The image has no `render` group, so do not --group-add it.
 # Wine refuses a prefix not owned by the current uid; run as the host user
@@ -87,8 +106,8 @@ exec docker run --rm \
   "${groups[@]}" \
   -v /etc/passwd:/etc/passwd:ro \
   -v /etc/group:/etc/group:ro \
-  -v /etc/machine-id:/etc/machine-id:ro \
-  -e DISPLAY="${DISPLAY:?DISPLAY unset}" \
+  "${machine_id_args[@]}" \
+  -e DISPLAY="$DISPLAY" \
   -e STEAM_ROOT=/opt/steam \
   -e STEAM_COMPAT_CLIENT_INSTALL_PATH=/opt/steam \
   -e PROTON="/opt/steam/${PROTON_REL}" \
