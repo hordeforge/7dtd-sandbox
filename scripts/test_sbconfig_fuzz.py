@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Fuzz gate for the two untrusted-input parsers in scripts/sbconfig.py.
 
 Both read text this repository does not control: the serverconfig template

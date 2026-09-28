@@ -68,7 +68,8 @@ Ranked by exploitability on the deployment this repository actually ships
    controls which native library the server loads.
 5. **Host to container.** `scripts/docker-gui.sh` grants `--ipc host`,
    `seccomp=unconfined`, `/dev/dri`, the X11 socket read-write, and the
-   repository read-write, and enables `xhost +local:` for local socket clients.
+   repository read-write, and enables `xhost +local:` for local socket clients
+   for the length of the session, revoking it when the container exits.
 6. **LAN to sandbox server.** The dedicated binds its allocated block on all
    interfaces, in the stock configuration this repository does not modify.
 
@@ -129,8 +130,9 @@ Ranked by exploitability on the deployment this repository actually ships
 - **Spoofing:** `xhost +local:` disables access control for local X11 socket
   clients, which is how the container's user reaches the display. That user is
   the host uid, pinned by `scripts/docker-gui.sh` and by the runtime image's own
-  `USER` (`Dockerfile.safehouse:136`); the display is not a separate trust
-  boundary from the host account.
+  `USER` (`Dockerfile.safehouse:143`); the display is not a separate trust
+  boundary from the host account. The grant is revoked when the container
+  exits, so it does not outlive the session that took it.
 
 ### LAN to sandbox server
 - **Elevation of privilege:** every `SERVER_ADMINS` name joins at

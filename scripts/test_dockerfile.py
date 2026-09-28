@@ -278,6 +278,64 @@ def test_runtime_is_not_root_and_fetch_stays_root() -> None:
     print("PASS runtime_is_not_root_and_fetch_stays_root")
 
 
+def test_runtime_home_exists_and_belongs_to_that_user() -> None:
+    """The declared HOME has to be a real directory the runtime user owns.
+
+    scripts/docker-gui.sh bind-mounts a host tree over /tmp/sb-home, but a
+    direct `docker run` does not, and a HOME that does not exist is a Proton
+    launch that fails on a path the caller cannot see. /tmp carries the sticky
+    bit, so the directory has to be created here rather than left to whichever
+    process first wants it.
+    """
+    runtime = directives(stage_body("runtime"))
+    env_block = re.search(r"^ENV .*(?:\n[ \t]+\S.*)*", runtime, re.MULTILINE)
+    assert env_block is not None and re.search(r"(?<![A-Z_])HOME=(\S+)", env_block.group(0)), (
+        "the runtime stage must declare HOME in its ENV, so the assertion below has a path"
+    )
+    home = re.search(r"(?<![A-Z_])HOME=(\S+)", runtime).group(1)
+    assert f"mkdir -p /sandbox {home}" in runtime and f"1000:1000 /sandbox {home}" in runtime, (
+        f"the runtime image must create {home} and hand it to the user it runs as"
+    )
+    print("PASS runtime_home_exists_and_belongs_to_that_user")
+
+
+def test_apt_only_settings_do_not_leak_into_the_image_env() -> None:
+    """DEBIAN_FRONTEND belongs to the apt instruction, not to the image.
+
+    As an ENV it configures apt for every later invocation and, worse, sits in
+    the environment of every process sb goes on to launch, Proton and the game
+    included.
+    """
+    runtime = directives(stage_body("runtime"))
+    assert "DEBIAN_FRONTEND" in runtime, "the runtime stage installs packages and names how"
+    assert not re.search(r"^ENV .*DEBIAN_FRONTEND", runtime, re.MULTILINE), (
+        "DEBIAN_FRONTEND must be scoped to the RUN that installs packages"
+    )
+    print("PASS apt_only_settings_do_not_leak_into_the_image_env")
+
+
+def test_docker_gui_takes_the_x_grant_back() -> None:
+    """`xhost +local:` disables access control for the whole display.
+
+    A grant taken for one container and never revoked outlives the container,
+    so the script has to take it back on the way out and still hand the caller
+    the container's exit status.
+    """
+    text = DOCKER_GUI.read_text(encoding="utf-8")
+    assert "xhost +local:" in text, "the GUI path needs the grant to open the window"
+    assert "xhost -local:" in text, (
+        "the grant must be revoked when the container exits, not left open for "
+        "the next process on the display"
+    )
+    assert "xhost -local:" in text.split("docker run --rm")[1], (
+        "the revoke has to run after the container, so it cannot sit above the run"
+    )
+    assert 'exit "$status"' in text, (
+        "docker-gui.sh must exit with the container's status, not the revoke's"
+    )
+    print("PASS docker_gui_takes_the_x_grant_back")
+
+
 TESTS = (
     test_two_targets_exist,
     test_every_base_is_pinned_by_digest,
@@ -291,6 +349,9 @@ TESTS = (
     test_images_carry_oci_labels,
     test_image_version_is_derived_from_sb_version,
     test_runtime_is_not_root_and_fetch_stays_root,
+    test_runtime_home_exists_and_belongs_to_that_user,
+    test_apt_only_settings_do_not_leak_into_the_image_env,
+    test_docker_gui_takes_the_x_grant_back,
 )
 
 

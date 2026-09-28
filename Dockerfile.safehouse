@@ -84,13 +84,14 @@ FROM ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987
 
 ARG SB_VERSION
 
-ENV DEBIAN_FRONTEND=noninteractive
-
 # python3 runs Proton's launcher and sb's own sbconfig.py; the rest is what
 # DXVK/wine need to open an X11 window on /dev/dri (RADV on this host).
 # Proton itself comes from the host's Steam tree, bind-mounted read-only by
 # scripts/docker-gui.sh, so it is not installed here either.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# DEBIAN_FRONTEND is scoped to this instruction, not an image ENV: it configures
+# apt, and an image-wide ENV lands in the environment of every process sb goes
+# on to launch, Proton and the game included.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         python3 \
         ca-certificates \
         libvulkan1 \
@@ -131,7 +132,14 @@ LABEL org.opencontainers.image.title="7dtd-safehouse (runtime)" \
 # pins --user to the caller. /sandbox is the only path the image itself owns
 # and sb writes instances under SANDBOX_HOME, so it is handed to this uid; a
 # direct `docker run -v "$PWD:/sandbox"` with no --user still works.
-RUN mkdir -p /sandbox && chown 1000:1000 /sandbox
+#
+# /tmp/sb-home is the HOME below, created here rather than left to the first
+# process to want it: scripts/docker-gui.sh bind-mounts over it, but a direct
+# `docker run` does not, and a HOME that does not exist is a wine/Proton launch
+# that fails on a path the caller cannot see. /tmp is world-writable with the
+# sticky bit, so it has to be this uid's own, or the container cannot write it.
+RUN mkdir -p /sandbox /tmp/sb-home \
+    && chown 1000:1000 /sandbox /tmp/sb-home
 USER 1000:1000
 
 WORKDIR /sandbox

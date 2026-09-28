@@ -46,9 +46,13 @@ done
 PROTON_DIR="/opt/steam/${PROTON_REL%/proton}"
 
 # Allow local unix-socket X11 clients (the container, running as the host uid,
-# talking to the host display). Revoke later with: xhost -local:
+# talking to the host display). The grant is a host-wide one, so it is revoked
+# again below once the container is gone rather than left open for whatever runs
+# next on the display.
+xhost_added=0
 if command -v xhost >/dev/null 2>&1; then
   xhost +local: >/dev/null 2>&1 || true
+  xhost_added=1
 fi
 
 devices=( --device /dev/dri )
@@ -113,7 +117,10 @@ container_name="7dtd-safehouse-gui-$$"
 # and let Proton's bundled wine talk to the host GPU/X11 directly.
 # Default docker network (no -p) keeps ports unpublished; --network none
 # hung Proton's steam.exe stub before 7DaysToDie.exe started.
-exec docker run --rm \
+# Not exec: the X grant above is taken back on the way out, and the caller's
+# exit status is the container's.
+status=0
+docker run --rm \
   "${tty_args[@]}" \
   --name "$container_name" \
   --ipc host \
@@ -144,4 +151,9 @@ exec docker run --rm \
   -v "$ROOT:/sandbox" \
   -w /sandbox \
   "$IMAGE" \
-  "${sb_args[@]}"
+  "${sb_args[@]}" || status=$?
+
+if [[ $xhost_added -eq 1 ]]; then
+  xhost -local: >/dev/null 2>&1 || true
+fi
+exit "$status"
