@@ -46,7 +46,9 @@ Nothing is deprecated ahead of removal in this repository today.
   `source` it, so a root holding a space wrote a contract that half-evaluates
   when it is sourced (`GAME=/srv/lab/game` sets `GAME=/srv/lab` and runs
   `lab/game` as a command). `sb env` hides it, so it surfaced later as a
-  missing game directory.
+  missing game directory. The name, the admin names and the property keys are
+  charset-checked where they are written, and the instance path was the one
+  value in `instance.env` that was not.
 - The seeded gate replays the seeds that found a defect on every push, not just
   its own default seed. `scripts/test_sbconfig_fuzz.py` runs `SEED` plus every
   entry in `REGRESSION_SEEDS`, and `--seed` is now repeatable, so a fix that a

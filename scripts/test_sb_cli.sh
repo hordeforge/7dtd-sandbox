@@ -671,10 +671,9 @@ expect_eq "no -screen- arg detected" "$screen_seen" "no"
 # --- the resolved configuration is readable ---------------------------------
 
 # instance.env is a KEY=VALUE contract the harnesses are told to source, and
-# its values are the instance's own paths written unquoted. A root a KEY=VALUE
-# line cannot carry is refused at create rather than written as a contract that
-# half-evaluates when it is sourced (GAME=/srv/lab/game sets GAME=/srv/lab and
-# runs lab/game as a command).
+# the rest of the declaration (instance name, admin names, property keys) is
+# charset-checked where it is written. An instances root outside that charset
+# is refused at create, before the directory exists.
 mkdir -p "$TMP/with space/instances" "$TMP/base/game" "$TMP/base/server-game"
 touch "$TMP/base/game/7DaysToDie.exe" "$TMP/base/server-game/7DaysToDieServer.x86_64"
 root_out="$(env SANDBOX_HOME="$TMP" SANDBOX_INSTANCES="$TMP/with space/instances" \

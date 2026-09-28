@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sbconfig
 
 # sbconfig's exit surface: 0 rendered, 1 a failed render or a missing key,
-# 2 a malformed invocation. Named so a change to it is a change here too.
-EXIT_FAILED = 1
+# 2 a malformed invocation or a declaration the XML cannot carry. Named so a
+# change to it is a change here too.
 EXIT_USAGE = 2
 EXIT_FAILED = 1
 

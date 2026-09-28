@@ -162,8 +162,8 @@ CLIENT_PLATFORM=local /path/to/7dtd-fastconnect/scripts/launch_client.sh
 | `sb env <name>` | eval-able contract for sibling harnesses |
 | `sb version` | the shipped version (canonical home: `SB_VERSION` in `scripts/sb`) |
 
-Every verb takes `--help`, which prints the flags that verb accepts and
-whether its examples; `sb help <command>` prints the same page.
+Every verb takes `--help`, which prints that verb's flags and a worked
+example; `sb help <command>` prints the same page.
 
 ```bash
 ./scripts/sb --help            # the command list and the env contract
@@ -249,7 +249,8 @@ properties. `7dtd-loadgen` calls it directly through `SANDBOX_ROOT`; only
 `SANDBOX_SERVER_BASE_GAME`, `SANDBOX_STEAMCMD`, `STEAM_APPID` (251570),
 `SERVER_APPID` (294420), `STEAM_ROOT`, `PROTON`, `GFX_API`, `SB_RES`
 (windowed resolution, default `1280x720`), `SB_FULLSCREEN` (`0` default
-windowed), `SB_CONFIG` (path to `sbconfig.py`, default beside `sb`),
+windowed), `SB_CONFIG` (path to `sbconfig.py`, default beside `sb`), `SB_PY`
+(interpreter for it, default `python3`, needs 3.8+),
 `STEAMCMD_USER`, `7DTD_PLAYER_NAME`, `STEAM_SEED_SOURCE` (a Steam install to
 seed the client base from, `--seed-from-steam`), `FASTCONNECT_DIST` (built
 `7dtd-fastconnect` modlet `sb run both` stages).
@@ -262,11 +263,9 @@ windowed) live once in `scripts/sb` as `SB_DEFAULT_RES` and
 so what a run will use is readable without reading the script.
 
 The instances root (`SANDBOX_INSTANCES`, default `<SANDBOX_HOME>/instances`)
-must be a path of `[A-Za-z0-9._/-]`. `instance.env` is a `KEY=VALUE` contract
-whose values are the instance's own paths, written unquoted, and a harness is
-told to `source` it: a root holding a space or a quote would write a contract
-that half-evaluates when it is sourced. `sb create` refuses such a root by
-name, before the directory exists.
+must be a path of `[A-Za-z0-9._/-]`, like the instance name, the admin names
+and the property keys beside it. `sb create` refuses such a root by name,
+before the directory exists.
 
 The Steam password is not read from the environment. steamcmd takes it only as
 a `+login` argument, and the process table is world-readable, so `sb fetch-base`

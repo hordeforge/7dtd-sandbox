@@ -181,9 +181,9 @@ Every property below is gated:
    `SB_DEFAULT_FULLSCREEN` in `sb`) have one home, because `sb create` records
    them and `sb launch` falls back to them for an instance created before the
    window was declared. The instances root has to be a path of
-   `[A-Za-z0-9._/-]`: `instance.env` carries the instance's paths unquoted and
-   a harness is told to `source` it, so a root holding a space would write a
-   contract that half-evaluates. `sb create` refuses it by name, and
+   `[A-Za-z0-9._/-]`, the same charset the name, the admin names and the
+   property keys are checked against, so the whole declaration is one set of
+   characters. `sb create` refuses it by name, and
    `sb init` prints the whole resolved configuration so a run's numbers are
    readable without reading `sb`.
 5. **Admins are declared, not discovered.** `SERVER_ADMINS` lists the Local

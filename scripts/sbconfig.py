@@ -30,7 +30,7 @@ world-readable through /proc/<pid>/cmdline for as long as the process lives,
 which publishes the player names this file admits to every account on the
 host. Stock auth maps PltfmId `Local_<playername>` to platform="Local"
 userid=<playername>; without a seed a Local join lands at permission 1000 and
-cannot run dm/givetools. The --name values are declared by the instance
+cannot run dm/givetools. The names are declared by the instance
 (`SERVER_ADMINS` in instance.env), never discovered from whatever other
 instances happen to exist on the machine: the same declaration must produce
 the same admin file on any host. An entry that is already there is matched by
