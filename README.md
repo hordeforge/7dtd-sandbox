@@ -250,7 +250,17 @@ seed the client base from, `--seed-from-steam`), `FASTCONNECT_DIST` (built
 
 `SB_RES` and `SB_FULLSCREEN` are read at `sb create` time and then recorded in
 the instance's `instance.env`; every later launch reads them from there, so an
-exported value at launch time changes nothing.
+exported value at launch time changes nothing. Their defaults (`1280x720`,
+windowed) live once in `scripts/sb` as `SB_DEFAULT_RES` and
+`SB_DEFAULT_FULLSCREEN`, and `sb init` prints the whole resolved configuration,
+so what a run will use is readable without reading the script.
+
+The instances root (`SANDBOX_INSTANCES`, default `<SANDBOX_HOME>/instances`)
+must be a path of `[A-Za-z0-9._/-]`. `instance.env` is a `KEY=VALUE` contract
+whose values are the instance's own paths, written unquoted, and a harness is
+told to `source` it: a root holding a space or a quote would write a contract
+that half-evaluates when it is sourced. `sb create` refuses such a root by
+name, before the directory exists.
 
 The Steam password is not read from the environment. steamcmd takes it only as
 a `+login` argument, and the process table is world-readable, so `sb fetch-base`

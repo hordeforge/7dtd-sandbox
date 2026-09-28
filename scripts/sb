@@ -127,6 +127,19 @@ sb_on_signal() {
   kill -s "$1" "$$"
 }
 
+# The window `sb create` records when the caller declares none, and the one
+# `sb launch` falls back to for an instance created before the window was
+# declared. Declared here rather than at either use site: two copies of one
+# default are two answers to the same question, and the AGENTS.md contract and
+# `sb help` both name this number.
+SB_DEFAULT_RES="1280x720"
+SB_DEFAULT_FULLSCREEN="0"
+
+# Seconds a bring-up waits for the game port before it stops the server it
+# started and fails. `sb up --timeout N` overrides it; `sb run both` has no
+# flag for it, so both paths wait the same number of seconds for the same port.
+SB_UP_TIMEOUT=180
+
 die() { echo "sb: $*" >&2; exit 1; }
 # Exit 2 for every usage error: a refused flag, a bad declaration, a missing
 # instance, an invalid name, an unknown command, and a missing argument. Exit 1
@@ -514,6 +527,29 @@ validate_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid instance name '$1' (use [A-Za-z0-9._-], not starting with '-')"
 }
 
+# An instance root whose path cannot be written into instance.env unquoted.
+#
+# instance.env is a KEY=VALUE contract whose values are the instance's own
+# paths, and it is documented for two consumers: `sb env` re-quotes it for
+# eval, but a sibling harness is told to `source` the file directly. A root
+# holding a space, a quote, a glob or a shell metacharacter therefore writes a
+# contract whose sourcing half-evaluates: `GAME=/srv/lab/game` sets GAME to
+# /srv/lab and runs `lab/game` as a command, and the harness starts with a
+# path that is not a path. `sb env` hides it, `sb status` does not, so the
+# breakage surfaces as a missing game directory rather than as a bad root.
+#
+# Refused at create, where the refusal can name the character and the
+# variable to move. The name, the ports, the window and the admins are
+# already charset-checked at the same boundary, so the instance path is the
+# only value left in that file that is not.
+assert_contract_safe_root() {
+  local path="$1" bad
+  [[ "$path" == *[^A-Za-z0-9._/-]* ]] || return 0
+  bad="$(printf '%s' "$path" | tr -d 'A-Za-z0-9._/-' | tr -s '[:space:]' ' ')"
+  die "instance root $path holds [$bad], which a KEY=VALUE instance.env line
+    cannot carry unquoted; point SANDBOX_INSTANCES at a path of [A-Za-z0-9._/-]"
+}
+
 # One declared value from an instance's instance.env, or empty. Every reader
 # that wants a single value goes through here, so a key is looked up the same
 # way everywhere: last declaration wins, a missing key reads as empty rather
@@ -524,8 +560,13 @@ validate_name() {
 # it emits every declaration rather than one.
 # One sed, no second process to trim its output: the bring-up paths look up a
 # dozen keys each.
+# The trailing `|| true` is this function's return value, not noise: the file
+# is absent for an instance nothing has written a contract into yet, sed exits
+# 2, and under `set -o pipefail` a caller outside a command substitution (a
+# subshell would swallow it) takes the whole script down with it. "No such
+# key" is empty, the same answer as "no such line".
 env_value() {
-  unquote_value "$(sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1)"
+  unquote_value "$(sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | tail -1 || true)"
 }
 
 # The inverse of shquote: the value a sourcing shell would assign to a line
@@ -538,6 +579,23 @@ unquote_value() {
     s="${s//\'\\\'\'/\'}"
   fi
   printf '%s' "$s"
+}
+
+# An instance-owned key the bring-up cannot proceed without.
+require_env_value() {
+  local inst="$1" key="$2" value
+  value="$(env_value "$inst" "$key")"
+  [[ -n "$value" ]] || die "no $key in $inst/instance.env (recreate the instance)"
+  echo "$value"
+}
+
+# A serverconfig property name is the stock config's own charset, and it is a
+# regex in the upsert that rewrites an existing property and a line prefix in
+# instance.props, so nothing outside [A-Za-z_][A-Za-z0-9_]* reaches either.
+# One predicate, because the two spellings it replaced disagreed on the
+# leading underscore and validate_prop is the only caller.
+prop_key_ok() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
 # One value as a single shell word, for the consumer that evaluates `sb env`.
@@ -1011,6 +1069,7 @@ cmd_create_server() {
     || die "server base missing at $SERVER_BASE_GAME (run 'sb fetch-server-base' first)"
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
   local inst="$INSTANCES_DIR/$name"
+  assert_contract_safe_root "$inst"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   # Validated and assembled before the directory exists, so a refused name
   # exits 2 with nothing written rather than through the rollback below.
@@ -1144,7 +1203,7 @@ validate_prop() { # validate_prop <KEY=VALUE> [where]
   [[ "$kv" == *=* ]] || usage_err "$where: '$kv' is not KEY=VALUE"
   key="${kv%%=*}"
   value="${kv#*=}"
-  [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+  prop_key_ok "$key" \
     || usage_err "$where: key '$key' must match [A-Za-z_][A-Za-z0-9_]* (e.g. MaxSpawnedZombies=0)"
   case "$value" in
     *$'\n'*|*$'\r'*) usage_err "$where: the value of '$key' spans a line break; a declaration is one line" ;;
@@ -1309,12 +1368,31 @@ record_server_props() {
 
 cmd_init() {
   mkdir -p "$INSTANCES_DIR" "$SANDBOX_HOME/base"
-  PROTON="$(detect_proton)"
+  # detect_proton dies, which is right for a create and wrong for the report
+  # that exists to tell an operator what sb resolved: on a host with no Proton
+  # yet, `sb doctor` could not print a single line. The refusal is reported and
+  # execution continues; every path that launches a client still refuses.
+  # `die` exits, so it is the assignment's status that needs the `|| true`.
+  [[ -n "${PROTON:-}" ]] || PROTON="$(detect_proton || true)" || true
+  # Every value this process resolved, so the configuration a run will use is
+  # readable from the tool rather than only from this file. Nothing here is a
+  # credential: the one secret-shaped variable in the tree (STEAMCMD_PASS) is
+  # refused at fetch, and STEAMCMD_USER is a name the fetch path prompts for.
   echo "SANDBOX_HOME=$SANDBOX_HOME"
   echo "INSTANCES_DIR=$INSTANCES_DIR"
   echo "BASE_GAME=$BASE_GAME"
-  echo "PROTON=$PROTON"
+  echo "SERVER_BASE_GAME=$SERVER_BASE_GAME"
+  echo "STEAMCMD_DIR=$STEAMCMD_DIR"
+  echo "PROTON=${PROTON:-not found (set PROTON=/path/to/proton)}"
   echo "STEAM_ROOT=$STEAM_ROOT"
+  echo "STEAM_APPID=$STEAM_APPID"
+  echo "SERVER_APPID=$SERVER_APPID"
+  echo "SB_CONFIG=$SB_CONFIG"
+  # The defaults `sb create` records and `sb up` waits, so a run's numbers can
+  # be read here rather than looked up in this file.
+  echo "SB_DEFAULT_RES=$SB_DEFAULT_RES"
+  echo "SB_DEFAULT_FULLSCREEN=$SB_DEFAULT_FULLSCREEN"
+  echo "SB_UP_TIMEOUT=${SB_UP_TIMEOUT}s"
   echo "steamcmd: $([ -x "$STEAMCMD_DIR/steamcmd.sh" ] && echo ok || echo missing)"
   # Readiness report, so a bad interpreter is named here rather than by the
   # first create/up that shells out to sbconfig.py.
@@ -1381,7 +1459,7 @@ cmd_doctor() {
 
 cmd_create() {
   local name="$1"; shift || true
-  local res="${SB_RES:-1280x720}" fullscreen="${SB_FULLSCREEN:-0}"
+  local res="${SB_RES:-$SB_DEFAULT_RES}" fullscreen="${SB_FULLSCREEN:-$SB_DEFAULT_FULLSCREEN}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --res) shift; [[ $# -gt 0 ]] || usage_err "--res needs WIDTHxHEIGHT"; res="$1" ;;
@@ -1396,6 +1474,7 @@ cmd_create() {
   assert_not_steam_owned "$INSTANCES_DIR" "instances"
   assert_not_steam_owned "$BASE_GAME" "base game"
   local inst="$INSTANCES_DIR/$name"
+  assert_contract_safe_root "$inst"
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   PROTON="$(detect_proton)"
   mkdir -p "$inst"
@@ -1779,14 +1858,15 @@ has_screen_arg() {
 # The window this instance declared, as "<res> <fullscreen>". Read from its
 # instance.env, not from the caller's environment: the same instance must open
 # the same window on any machine. An instance created before the window was
-# declared falls back to the defaults, which is what it was getting anyway.
+# declared falls back to SB_DEFAULT_RES / SB_DEFAULT_FULLSCREEN, which is what
+# it was getting anyway.
 # Pure: the caller validates, so a refusal exits `sb` rather than a subshell.
 declared_window() {
-  local inst="$1" res fullscreen default_res=1280x720 default_fullscreen=0
+  local inst="$1" res fullscreen
   res="$(env_value "$inst" SB_RES)"
   fullscreen="$(env_value "$inst" SB_FULLSCREEN)"
-  [[ -n "$res" ]] || res="$default_res"
-  [[ -n "$fullscreen" ]] || fullscreen="$default_fullscreen"
+  [[ -n "$res" ]] || res="$SB_DEFAULT_RES"
+  [[ -n "$fullscreen" ]] || fullscreen="$SB_DEFAULT_FULLSCREEN"
   echo "$res $fullscreen"
 }
 
@@ -1920,7 +2000,7 @@ monotonic_now() {
 # before the world is fully generated; clients that auto-join usually finish
 # loading by then too.
 wait_for_port() {
-  local host="$1" port="$2" timeout="${3:-90}"
+  local host="$1" port="$2" timeout="${3:-$SB_UP_TIMEOUT}"
   local start
   start="$(monotonic_now)"
   while (( $(monotonic_now) - start < timeout )); do

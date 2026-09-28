@@ -34,6 +34,19 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Added
 
+- `sb init` (and `sb doctor`, which calls it) reports the whole resolved
+  configuration: both base paths, the steamcmd dir, both app ids, `SB_CONFIG`,
+  the window defaults and the bring-up timeout. Reading a run's configuration
+  meant reading `scripts/sb`, so the one thing `doctor` is for was the one
+  thing it did not say. It also runs on a host with no Proton yet, reporting
+  the missing runtime instead of dying before its first line, which is what
+  `detect_proton`'s refusal used to do to the report.
+- An instances root of `[A-Za-z0-9._/-]` is refused at create, by name.
+  `instance.env` carries the instance's paths unquoted and a harness is told to
+  `source` it, so a root holding a space wrote a contract that half-evaluates
+  when it is sourced (`GAME=/srv/lab/game` sets `GAME=/srv/lab` and runs
+  `lab/game` as a command). `sb env` hides it, so it surfaced later as a
+  missing game directory.
 - `instance.env` is written 0600, like the two files its declarations reach
   (`serveradmin.xml` and `serverconfig.xml`). On a server it carries
   `SERVER_ADMINS`, so a 022 umask left every Local player name the instance
@@ -129,6 +142,11 @@ Nothing is deprecated ahead of removal in this repository today.
 - `sbconfig.py port-block` refused nothing when `PORT_BLOCK_BASE` and
   `PORT_BLOCK_COUNT` were raised past the port space, and handed out blocks
   whose telnet and ephemeral ports cannot be bound. It fails by name now.
+- `env_value` no longer takes the whole script down when an instance has no
+  contract yet. `sed` exits 2 on the missing `instance.env`, and under
+  `set -o pipefail` that status came back to any caller not already inside a
+  command substitution. "No such key" is empty, the same answer as "no such
+  line".
 - `sb up` and `sb run` converge when they are run again against an instance
   whose create never finished. A create allocates the instance directory
   before the work that fills it, and its rollback only runs when the create
@@ -474,6 +492,13 @@ Nothing is deprecated ahead of removal in this repository today.
   consumer re-splits: the stock `Proton - Experimental` path assigned the
   prefix and then ran `-` as a command, and a path carrying a newline wrote a
   second line the sourcing shell executed.
+- One home per default. `SB_DEFAULT_RES` and `SB_DEFAULT_FULLSCREEN` are
+  declared once at the top of `sb`: the window defaults were written down twice
+  (`sb create` recorded them, `sb launch` fell back to a private copy). A
+  second copy of a default is a second answer to the same question.
+- The property-key charset has one predicate, `prop_key_ok`. The two spellings
+  it replaced disagreed about the leading underscore, and the one `validate_prop`
+  does not use was called by nothing.
 - The process scan behind `sb list`, `sb status`, `sb stop`, `sb wipe` and
   `sb destroy` reads every `/proc/<pid>/environ` in one `grep -z` pass instead
   of a `tr | grep` pair per process, and `sb list` asks for every instance's

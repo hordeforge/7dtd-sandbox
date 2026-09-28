@@ -549,6 +549,55 @@ expect_eq "-screen- arg detected" "$screen_seen" "yes"
 has_screen_arg -connect=1.2.3.4 && screen_seen=yes || screen_seen=no
 expect_eq "no -screen- arg detected" "$screen_seen" "no"
 
+# --- the resolved configuration is readable ---------------------------------
+
+# instance.env is a KEY=VALUE contract the harnesses are told to source, and
+# its values are the instance's own paths written unquoted. A root a KEY=VALUE
+# line cannot carry is refused at create rather than written as a contract that
+# half-evaluates when it is sourced (GAME=/srv/lab/game sets GAME=/srv/lab and
+# runs lab/game as a command).
+mkdir -p "$TMP/with space/instances" "$TMP/base/game" "$TMP/base/server-game"
+touch "$TMP/base/game/7DaysToDie.exe" "$TMP/base/server-game/7DaysToDieServer.x86_64"
+root_out="$(env SANDBOX_HOME="$TMP" SANDBOX_INSTANCES="$TMP/with space/instances" \
+  "$SB" create sp 2>&1 || true)"
+if [[ -e "$TMP/with space/instances/sp" ]]; then
+  echo "FAIL: a refused instances root still created the instance" >&2
+  fail=1
+fi
+grep -q "SANDBOX_INSTANCES" <<<"$root_out" \
+  || { echo "FAIL: the refusal did not name the variable to move: $root_out" >&2; fail=1; }
+check "create-server under the same root dies" 1 env SANDBOX_HOME="$TMP" \
+  SANDBOX_INSTANCES="$TMP/with space/instances" "$SB" create-server sp
+check "create under a safe root is accepted"   0 env SANDBOX_HOME="$TMP" \
+  SANDBOX_INSTANCES="$TMP/instances" "$SB" create ok # the stub PROTON, the fake base
+
+# The window defaults have one home (SB_DEFAULT_RES / SB_DEFAULT_FULLSCREEN),
+# so an instance created before the window was declared opens the same window
+# a fresh one is recorded with.
+# shellcheck disable=SC1090,SC1091 # extract the defaults and the reader from sb
+source /dev/stdin <<<"$(sed -n '/^SB_DEFAULT_RES=/p' "$SB")
+$(sed -n '/^SB_DEFAULT_FULLSCREEN=/p' "$SB")
+$(sed -n '/^env_value()/,/^}/p' "$SB")
+$(sed -n '/^declared_window()/,/^}/p' "$SB")"
+# shellcheck disable=SC2154 # the two defaults are sourced out of sb above
+want_window="$SB_DEFAULT_RES $SB_DEFAULT_FULLSCREEN"
+read -r win_res win_fs < <(declared_window "$TMP/instances/nodeclared")
+expect_eq "undeclared window falls back to the one default" "$win_res $win_fs" \
+  "$want_window"
+
+# sb init is where an operator reads back what sb resolved, so it has to work
+# on a host that has no Proton yet: detect_proton dies, and the report used to
+# die with it before printing a line.
+NO_PROTON_HOME="$TMP/nohome" && mkdir -p "$NO_PROTON_HOME"
+init_rc=0
+init_out="$(env -u PROTON HOME="$NO_PROTON_HOME" SANDBOX_HOME="$TMP/np" "$SB" init 2>&1)" || init_rc=$?
+expect_eq "sb init runs with no Proton on the host" "$init_rc" "0"
+for needle in "SERVER_BASE_GAME=" "SERVER_APPID=" "STEAM_APPID=" "SB_CONFIG=" \
+  "SB_DEFAULT_RES=1280x720" "SB_UP_TIMEOUT="; do
+  grep -qF "$needle" <<<"$init_out" \
+    || { echo "FAIL: sb init does not report $needle" >&2; fail=1; }
+done
+
 if [[ "$fail" -ne 0 ]]; then
   echo "sb_cli: FAILED" >&2
   exit 1
