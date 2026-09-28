@@ -104,7 +104,7 @@ Local-platform auth (`PltfmId='Local_client-demo'`) and
 7dtd-sandbox/
   base/game/            pristine Windows client base (steamcmd; never edit)
   base/server-game/     pristine Linux dedicated base (steamcmd, anonymous)
-  instances/<name>/     one directory per instance
+  instances/<name>/     one directory per instance (0700)
     game/               fresh COW copy of the base; apply mods here
     game/platform.cfg   Local platform / no EOS
     compatdata/         client: own Proton prefix
@@ -225,6 +225,12 @@ was told to run with. Everything else is derived:
   A Proton path with a space in it stays one word to a harness that sources the
   file, and a path carrying a newline cannot write a second line into that
   shell. A hand-edited bare value still reads.
+- **An instance directory is the caller's own (0700)**, re-applied on every
+  bring-up and every wipe. What a run knows about the people playing on it is
+  the seeded admin names, the server log naming who connected, the saves and
+  the client's Proton prefix; the files `sb` writes are published 0600, and
+  the ones the game writes carry the game's umask, so the directory is what
+  keeps another account on a shared host out of them.
 
 `sb stop` matches processes by that instance's own `SB_INSTANCE`, so a harness
 never needs a `pkill` that would reach another instance's server. `sb wipe`

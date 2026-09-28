@@ -783,6 +783,21 @@ restrict_instance_env() {
     || warn "could not restrict $env_file to 0600 (check the filesystem's mode support)"
 }
 
+# The instance directory holds what a run knows about the people playing on
+# it: the seeded admin names, the server log naming who connected, the saves
+# and the client's Proton prefix. The files sb writes are published 0600, but
+# the ones the game writes carry the process umask (0644 under the usual 022)
+# and mkdir left every directory here at 0755, so on a host with more than one
+# account the same names were readable through the log and the saves. The
+# directory is what carries the restriction, because the game creates the
+# files; everything sb wrote was already restricted by name.
+restrict_instance_dir() {
+  local inst="$1"
+  [[ -d "$inst" ]] || return 0
+  chmod 0700 "$inst" 2>/dev/null \
+    || warn "could not restrict $inst to 0700 (check the filesystem's mode support)"
+}
+
 # Always-admin for Local sandbox clients. Stock auth maps PltfmId
 # `Local_<playername>` to platform="Local" userid=<playername>. Without a
 # seed, Local joins land as permission 1000 and cannot run dm/givetools. The
@@ -801,6 +816,7 @@ seed_sandbox_admins() {
   # the process lives, which publishes the player names this server admits.
   # This runs on every server bring-up, so an instance.env written before the
   # guard existed is restricted too, not only the ones created after it.
+  restrict_instance_dir "$inst"
   restrict_instance_env "$inst"
   {
     local IFS=,
@@ -1080,6 +1096,9 @@ cmd_create_server() {
     admins="${admins:+$admins,}$extra"
   done
   mkdir -p "$inst"
+  # Before the copy, so nothing the body writes below is ever published under
+  # the umask.
+  restrict_instance_dir "$inst"
   # Owned until the body below succeeds, so an interrupt during the copy takes
   # the partial tree with it; the rollback below covers the paths that fail on
   # their own.
@@ -1483,6 +1502,9 @@ cmd_create() {
   [[ -e "$inst" ]] && die "instance '$name' already exists at $inst"
   PROTON="$(detect_proton)"
   mkdir -p "$inst"
+  # Before the copy, so nothing the body writes below is ever published under
+  # the umask.
+  restrict_instance_dir "$inst"
   # Owned until the body below succeeds, so an interrupt during the copy takes
   # the partial tree with it.
   sb_own_pending "$inst"
@@ -1622,6 +1644,7 @@ cmd_wipe() {
   copy_tree "$BASE_GAME" "$inst/game" "base game"
   prune_instance_mods "$inst"
   write_platform "$inst/game/platform.cfg" Local
+  restrict_instance_dir "$inst"
   seed_offline_prefs "$inst"
   local roam="$inst/compatdata/pfx/drive_c/users/steamuser/AppData/Roaming/7DaysToDie"
   rm -rf "$roam/Saves" "$roam/SavesLocal" "$roam/GeneratedWorlds" 2>/dev/null || true
@@ -1747,6 +1770,9 @@ cmd_launch() {
   PROTON="$(detect_proton)"
   ensure_local_platform "$game"
   mkdir -p "$inst/logs"
+  # Every client bring-up, so an instance created before the guard existed has
+  # its prefix and logs restricted too, not only the ones created after it.
+  restrict_instance_dir "$inst"
   link_prefix_logs "$inst"
   export STEAM_COMPAT_DATA_PATH="$compat"
   export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"

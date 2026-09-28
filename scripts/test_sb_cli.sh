@@ -406,6 +406,12 @@ check "create-server accepts a plain admin" 0 \
   env SANDBOX_HOME="$TMP" "$SB" create-server srvplain --admin 'client-ok'
 grep -qx "SERVER_ADMINS='client-ok'" "$TMP/instances/srvplain/instance.env" \
   || { echo "FAIL: a valid --admin did not reach SERVER_ADMINS" >&2; fail=1; }
+# The instance directory is what keeps another account on a shared host out of
+# the game-written files under it: the server log, the saves, the userdata
+# logs, all created by the game at its own umask. 0755 published every one of
+# them under a file the 0600 restrictions never touch.
+expect_eq "instance dir is 0700 after create-server" \
+  "$(stat -c '%a' "$TMP/instances/srvplain")" "700"
 
 # --- the window contract every launcher must honour -------------------------
 
@@ -531,6 +537,13 @@ check "create client ok"        0 env SANDBOX_HOME="$TMP" "$SB" create cli-ok
 check "create server ok"        0 env SANDBOX_HOME="$TMP" "$SB" create-server srv-ok
 grep -q '^SERVER_PORT=' "$TMP/instances/srv-ok/instance.env" \
   || { echo "FAIL: create-server recorded no port block" >&2; fail=1; }
+# A client prefix and a client log are the same personal data a server's are:
+# the player name, the saves, the log lines naming who played. Both kinds are
+# restricted by the same rule, so both are asserted here.
+for created in cli-ok srv-ok; do
+  expect_eq "$created instance dir is 0700" \
+    "$(stat -c '%a' "$TMP/instances/$created")" "700"
+done
 
 # The instance dir is allocated before the work that fills it. A failure
 # anywhere in that work used to leave a tree behind that refuses every retry

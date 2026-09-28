@@ -131,7 +131,10 @@ LABEL org.opencontainers.image.title="7dtd-safehouse (runtime)" \
 # executable, game trees live on the host, and scripts/docker-gui.sh already
 # pins --user to the caller. /sandbox is the only path the image itself owns
 # and sb writes instances under SANDBOX_HOME, so it is handed to this uid; a
-# direct `docker run -v "$PWD:/sandbox"` with no --user still works.
+# direct `docker run -v "$PWD:/sandbox"` with no --user works on a host whose
+# user is 1000, and an instance directory sb created is 0700 (it holds the
+# player names, saves and logs), so on any other host the run has to pin
+# --user to the caller exactly as scripts/docker-gui.sh does.
 #
 # /tmp/sb-home is the HOME below, created here rather than left to the first
 # process to want it: scripts/docker-gui.sh bind-mounts over it, but a direct

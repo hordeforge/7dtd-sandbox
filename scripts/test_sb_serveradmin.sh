@@ -47,7 +47,9 @@ EOF
 # The interpreter check travels with them: seeding shells out to sbconfig.py.
 source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^die()/,/^}/p;/^require_python()/,/^}/p;/^unquote_value()/,/^}/p;/^env_value()/,/^}/p' "$SB")
 $(sed -n '/^default_server_admins()/,/^}/p' "$SB")
+$(sed -n '/^warn()/,/^}/p' "$SB")
 $(sed -n '/^restrict_instance_env()/,/^}/p' "$SB")
+$(sed -n '/^restrict_instance_dir()/,/^}/p' "$SB")
 $(sed -n '/^seed_sandbox_admins()/,/^}/p' "$SB")"
 # A rename on the sb side leaves the sed matching nothing, and the helper is
 # then simply undefined: the first case dies on a name error at best, and at
@@ -80,6 +82,16 @@ expect_eq "serveradmin.xml is 0600" "$(stat -c '%a' "$admin")" "600"
 chmod 0644 "$INST/instance.env"
 seed_sandbox_admins "$INST"
 expect_eq "instance.env is 0600 after a seed" "$(stat -c '%a' "$INST/instance.env")" "600"
+
+# The game writes the rest of what a run knows about its players itself: the
+# server log naming who connected, the saves, the userdata logs. Those files
+# carry the game process's umask, so the directory is what has to keep another
+# account on a shared host out of them. A 0755 instance dir left by a 022 umask
+# published every one of those names under a file the restrictions above never
+# touch.
+chmod 0755 "$INST"
+seed_sandbox_admins "$INST"
+expect_eq "instance dir is 0700 after a seed" "$(stat -c '%a' "$INST")" "700"
 
 # An unrelated instance on the machine must not leak into this server's file.
 mkdir -p "$INSTANCES_DIR/client-unrelated"
@@ -167,6 +179,15 @@ checks = [
     # through /proc/<pid>/cmdline by every account on the host, which would
     # publish the player names this server admits.
     ("seed_sandbox_admins", "restrict_instance_env"),
+    # The instance directory carries the same names, in the files the game
+    # writes rather than the ones sb writes, so every create and every bring-up
+    # has to restrict it. A create that only restricted it after the copy would
+    # have published the whole tree for the length of a 20 GB copy.
+    ("cmd_create", "restrict_instance_dir"),
+    ("cmd_create_server", "restrict_instance_dir"),
+    ("cmd_launch", "restrict_instance_dir"),
+    ("cmd_wipe", "restrict_instance_dir"),
+    ("seed_sandbox_admins", "restrict_instance_dir"),
 ]
 
 fail = 0

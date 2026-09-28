@@ -696,11 +696,11 @@ def cmd_seed_admins(args: argparse.Namespace) -> int:
     if changed:
         # stderr, not stdout: `sb up` runs this on its stdout path, whose whole
         # content is the instance contract, and a status line there broke
-        # `eval "$(sb up <name>)"`.
-        print(
-            f"seeded serveradmin.xml (Local admins: {', '.join(names)})",
-            file=sys.stderr,
-        )
+        # `eval "$(sb up <name>)"`. A count, not the names: the names are player
+        # names this server admits, and this line lands on whatever captured
+        # output, a harness log or a CI transcript. The declaration the caller
+        # seeded from is where the names belong.
+        print(f"seeded serveradmin.xml ({len(names)} Local admins)", file=sys.stderr)
     return 0
 
 

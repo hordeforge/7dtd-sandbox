@@ -431,6 +431,20 @@ Nothing is deprecated ahead of removal in this repository today.
   the file. `SB_PY_MIN` in `sb`, `MIN_PYTHON` in `sbconfig.py` and the README
   all move together. The raise itself is a contract change and is written out
   under `Changed`.
+- The instance directory is created 0700 and restricted again on every bring-up
+  and every wipe. `instance.env`, `serveradmin.xml`, `serverconfig.xml` and
+  `instance.props` were each restricted by name, and the directories holding
+  them were left at the umask (0755 under the usual 022), so the files the game
+  writes itself, which carry the same player names plus the saves and the log
+  lines naming who connected, were readable by every account on the host
+  through a directory the per-file restrictions never covered. The restriction
+  is on the directory because the game creates those files; a client instance
+  is restricted the same way, since its Proton prefix and log hold the same
+  data.
+- `sbconfig.py seed-admins` reports how many Local admins it seeded rather
+  than naming them. The names are player names this server admits, and the line
+  lands on whatever captured stdout: a harness log, a CI transcript, a
+  terminal scrollback. The declaration seeded from is where the names belong.
 
 ### Documentation
 
