@@ -37,8 +37,10 @@ source /dev/stdin <<<"$(sed -n '/^SB_PY=/p;/^SB_PY_MIN=/p;/^PORT_BLOCK_SIZE=/p;/
 
 # instance_server_ports is the gate a hand-edited instance.env passes through,
 # so the range it accepts is the range a server is ever started on. It reads
-# its values through env_value, so that and the unquoting it calls come with it:
-# extracting the function alone left it calling a helper that was never defined.
+# its values through env_value (last declaration wins, like every other reader)
+# and through the unquoting that calls, so that and both helpers come with it:
+# extracted alone, the gate ran against an undefined env_value and refused the
+# one block that is legal.
 # shellcheck disable=SC1090,SC1091 # sourced out of sb, as the allocator above
 source /dev/stdin <<<"$(sed -n '/^unquote_value()/,/^}/p;/^env_value()/,/^}/p;/^instance_server_ports()/,/^}/p' "$SB")"
 for helper in unquote_value env_value instance_server_ports; do

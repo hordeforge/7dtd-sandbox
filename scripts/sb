@@ -906,11 +906,18 @@ instance_marker() {
 # consume (kill takes a pid, not a "<marker>\t<pid>" line).
 instance_procs() {
   local marker pid
+  # Sorted numerically: /proc is walked in readdir order, which is neither
+  # numeric nor stable, so the pids of one instance came back in a different
+  # order on every call. A teardown that TERMS and then KILLs in that order
+  # gives the parent and the child different grace windows run to run, and the
+  # list a caller prints for its own log differs between two identical states.
+  # Ascending pid is also roughly oldest-first, so the process that started an
+  # instance is signalled before the ones it started.
   while IFS=$'\t' read -r marker pid || [[ -n "$marker" ]]; do
     if [[ -n "$pid" ]]; then
       printf '%s\n' "$pid"
     fi
-  done < <(pids_for_markers "$(instance_marker "$1")")
+  done < <(pids_for_markers "$(instance_marker "$1")") | LC_ALL=C sort -n
 }
 
 # --- client commands -------------------------------------------------------
@@ -1375,11 +1382,15 @@ record_server_props() {
     rm -f "$tmp"
     die "could not install $props"
   fi
-  # Sorted by byte, not by the caller's collation: the declared order is what
-  # apply_server_config turns into --set arguments, so it fixes the order of the
-  # properties in the rendered serverconfig. Under a UTF-8 locale sort places
-  # `alpha` before `Bravo` and ignores punctuation, so the same declarations
-  # rendered a different serverconfig.xml on a machine with a different locale.
+  # LC_ALL=C: the file is a declaration, and `sort` collates in the caller's
+  # locale, so the same declarations landed in a different order under a
+  # different LC_COLLATE. Sorted by byte rather than by the caller's collation,
+  # because the declared order is what apply_server_config turns into --set
+  # arguments, so it fixes the order of the properties in the rendered
+  # serverconfig, and under a UTF-8 locale `alpha` sorts before `Bravo` and
+  # punctuation is ignored. The order carries no meaning (the upsert matches a
+  # literal KEY= prefix), so it is free to be the byte order, which is the one
+  # every machine agrees on.
   LC_ALL=C sort -o "$props" "$props"
 }
 

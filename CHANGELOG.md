@@ -47,6 +47,11 @@ Nothing is deprecated ahead of removal in this repository today.
   when it is sourced (`GAME=/srv/lab/game` sets `GAME=/srv/lab` and runs
   `lab/game` as a command). `sb env` hides it, so it surfaced later as a
   missing game directory.
+- The seeded gate replays the seeds that found a defect on every push, not just
+  its own default seed. `scripts/test_sbconfig_fuzz.py` runs `SEED` plus every
+  entry in `REGRESSION_SEEDS`, and `--seed` is now repeatable, so a fix that a
+  later change quietly undoes is caught by the seed that found it. A new
+  finding's printed seed is added to that list in the same change.
 - `instance.env` is written 0600, like the two files its declarations reach
   (`serveradmin.xml` and `serverconfig.xml`). On a server it carries
   `SERVER_ADMINS`, so a 022 umask left every Local player name the instance
@@ -118,6 +123,23 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- `seed_admins` could write a `serveradmin.xml` no XML parser accepts, and
+  could grant an admin to nobody. The tag matcher stopped at the first `>`, so
+  an entry whose attribute value held one (the stock `permission_level="-->"`
+  comment marker is exactly this shape) was matched mid-attribute and the rest
+  of the tag was written back inside the value. Separately, an entry carrying
+  only `name=` was adopted and raised to level 0 while holding no `userid`, and
+  stock auth looks an admin up by exact `userid`, so it granted nothing. Both
+  were found by replaying the seeded gate at seeds the default run never
+  touched.
+- `sb list` and the teardown read `/proc` in readdir order, so the pids of one
+  instance came back in a different order on every call: the TERM-then-KILL
+  order a stop used, and the pid list a caller printed for its own log, varied
+  between two identical states. Ascending pid now, which is also roughly
+  oldest-first.
+- `sb render-config` sorted `instance.props` in the caller's locale, so the
+  same declarations landed in a different order under a different `LC_COLLATE`.
+  The order carries no meaning and is byte order now.
 - An interrupted run left what it owned in the instance tree. `sb` registers
   the staging tree a copy is written into, the tree it moves aside to replace
   one, the `instance.props` temp and the directory a create is half-building,

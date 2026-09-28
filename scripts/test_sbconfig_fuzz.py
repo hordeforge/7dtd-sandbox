@@ -41,6 +41,17 @@ import sbconfig
 ITERATIONS = 400
 SEED = 20260928
 
+# Seeds that found a real defect, replayed at the same iteration count on every
+# push alongside SEED. A generator is only as good as the seeds it is pinned
+# to: SEED alone kept passing while a fixed SEED and four others each found a
+# broken rewrite, so a defect fixed today could be reintroduced by any later
+# change and no seed in the default run would notice. Each is here with the
+# defect it reproduces, and a new finding's printed seed is added the same way.
+#   119: a `>` inside an attribute value ended the tag the upsert rewrote.
+#   7: an adopted entry carrying only `name` was granted but had no `userid`.
+#   1234: the `>` case again, found independently at a wider iteration count.
+REGRESSION_SEEDS = (7, 119, 1234)
+
 # A call that takes this long is a finding: `_upsert_user`'s lookaheads scan
 # to the next `>` from every start offset, so a crafted file with very long
 # `>`-free attribute runs is quadratic in the file length.
@@ -351,13 +362,20 @@ def check_serveradmin(doc: str, names: list[str], tmp: Path) -> None:
             f"a rewritten serveradmin.xml is {admin.stat().st_mode & 0o777:o}",
             doc,
         )
-    levels = {u.get("userid"): u.get("permission_level") for u in root.iter("user")}
+    # Keyed by userid over the whole document, the last entry for a name wins,
+    # so a Steam or EOS entry carrying the same userid shadowed the Local one
+    # the seeder writes and the assertion failed on a file that grants what it
+    # was declared. Stock auth maps `Local_<name>` to platform="Local", so only
+    # the Local entry is the identity, and the check is that one is present at
+    # level 0 (a duplicate Local entry for the same name does not make it not
+    # present).
+    granted = {
+        u.get("userid")
+        for u in root.iter("user")
+        if u.get("platform") == "Local" and u.get("permission_level") == "0"
+    }
     for name in names:
-        _require(
-            levels.get(name) == "0",
-            f"declared admin {name!r} is at {levels.get(name)!r}",
-            doc,
-        )
+        _require(name in granted, f"declared admin {name!r} is not a Local level-0 entry", doc)
     _require(
         _timed(doc, sbconfig.seed_admins, admin, names) is False,
         "a second seed changed a correct file",
@@ -431,11 +449,18 @@ TARGETS = (
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iters", type=int, default=ITERATIONS)
-    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        action="append",
+        help="seed to run; repeatable. Defaults to SEED and every regression seed",
+    )
     args = parser.parse_args()
+    seeds = tuple(args.seed) if args.seed else (SEED, *REGRESSION_SEEDS)
     failed = 0
-    for name, build, check in TARGETS:
-        failed += run(name, build, check, args.iters, args.seed)
+    for seed in seeds:
+        for name, build, check in TARGETS:
+            failed += run(name, build, check, args.iters, seed)
     return 1 if failed else 0
 
 

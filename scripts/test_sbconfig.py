@@ -854,6 +854,53 @@ def test_seed_creates_the_admin_file_private(tmp: Path) -> None:
     print("PASS seed_creates_the_admin_file_private")
 
 
+def test_seed_upserts_an_entry_whose_value_holds_a_gt(tmp: Path) -> None:
+    """A `>` inside an attribute value is data, not the end of the tag.
+
+    The tag matcher stopped at the first `>`, which for
+    `permission_level="-->` is inside the value, so the rewrite put the rest of
+    the tag back inside the attribute and left a serveradmin.xml no parser
+    accepts. Found by the seeded gate at seed 119.
+    """
+    _seed(tmp, "client-sg")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    seeded = f'userid="client-sg" name="client-sg" permission_level="0" {sbconfig.SEED_MARKER}="1"'
+    admin.write_text(
+        admin.read_text(encoding="utf-8").replace(
+            seeded, 'userid="client-sg" name="client-sg" permission_level="-->"', 1
+        ),
+        encoding="utf-8",
+    )
+    text = _seed(tmp, "client-sg")
+    root = ET.fromstring(text)
+    users = {u.get("userid"): u.get("permission_level") for u in root.iter("user")}
+    assert users.get("client-sg") == "0", users
+    print("PASS seed_upserts_an_entry_whose_value_holds_a_gt")
+
+
+def test_seed_adds_the_userid_an_adopted_entry_lacks(tmp: Path) -> None:
+    """A Local entry carrying only `name` is granted, and is matchable.
+
+    The lookup accepts either attribute, so such an entry was adopted and
+    raised to level 0 while carrying no `userid`, and stock auth looks an admin
+    up by exact `userid`: it granted nothing. Found by the seeded gate at
+    seed 7.
+    """
+    _seed(tmp, "client-sg")
+    admin = tmp / "userdata" / "Saves" / "serveradmin.xml"
+    seeded = f'userid="client-sg" name="client-sg" permission_level="0" {sbconfig.SEED_MARKER}="1"'
+    admin.write_text(
+        admin.read_text(encoding="utf-8").replace(seeded, 'name="client-sg"', 1),
+        encoding="utf-8",
+    )
+    text = _seed(tmp, "client-sg")
+    root = ET.fromstring(text)
+    entry = next(u for u in root.iter("user") if u.get("userid") == "client-sg")
+    assert entry.get("permission_level") == "0", entry.attrib
+    assert entry.get("name") == "client-sg", entry.attrib
+    print("PASS seed_adds_the_userid_an_adopted_entry_lacks")
+
+
 def test_interrupted_write_leaves_no_temp_behind(tmp: Path) -> None:
     """A write that dies on anything but an OSError takes its temp with it.
 
@@ -937,6 +984,8 @@ TESTS = (
     test_seed_refuses_a_dtd,
     test_seed_creates_the_admin_file_private,
     test_interrupted_write_leaves_no_temp_behind,
+    test_seed_upserts_an_entry_whose_value_holds_a_gt,
+    test_seed_adds_the_userid_an_adopted_entry_lacks,
 )
 
 

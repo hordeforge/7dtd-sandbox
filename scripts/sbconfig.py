@@ -376,6 +376,15 @@ def _use_utf8_stdio() -> None:
             continue
 
 
+def _tag_closer(tag: str) -> str:
+    """The `>` that ends a start tag, or the `/>` of a self-closing one.
+
+    The tag text is the whole match `_USER_TAG` produced, so the final `>` is
+    the element's end whatever a `>` inside an attribute value looked like.
+    """
+    return " />" if tag.endswith("/>") else ">"
+
+
 def _user_line(name: str) -> str:
     return (
         f'    <user platform="Local" userid="{xml_attr(name)}" '
@@ -383,7 +392,13 @@ def _user_line(name: str) -> str:
     )
 
 
-_USER_TAG = re.compile(r"<user\b[^>]*>")
+# A `>` inside a quoted attribute value is data, not the end of the tag:
+# `<user ... permission_level="-->` is the stock comment marker, and matching
+# `[^>]*` stopped inside that value, so the tag "found" there was a fragment
+# whose tail the rewrite put back inside the attribute and produced a
+# serveradmin.xml no parser accepts. An attribute value, or any run of
+# characters that is neither `>` nor the opening quote, is one alternative.
+_USER_TAG = re.compile(r'<user\b(?:[^>"]|"[^"]*")*>')
 _USER_CLOSE = re.compile(r"</user\s*>")
 _PLATFORM_LOCAL = re.compile(r'\bplatform="Local"')
 _USER_ID = re.compile(r'\b(?:userid|name)="([^"]*)"')
@@ -493,6 +508,13 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
         pattern = re.compile(_ATTR % attr)
         if pattern.search(new):
             new = pattern.sub(lambda m: m.group(1) + escaped + m.group(3), new, count=1)
+    # A userid the entry does not carry is added, because the game looks an
+    # admin up by exact `userid`: an entry carrying only name="Player" is
+    # matched here (the lookup accepts either attribute) and left that way, and
+    # then admits nobody at all. Added beside platform so the identity
+    # attributes stay together, which is also where the seeder writes them.
+    if not re.search(_ATTR % "userid", new):
+        new = new[: -len(_tag_closer(new))].rstrip() + f' userid="{escaped}"' + _tag_closer(new)
     permission = re.compile(_ATTR % "permission_level")
     if permission.search(new):
         new = permission.sub(lambda m: m.group(1) + "0" + m.group(3), new, count=1)
@@ -500,16 +522,15 @@ def _upsert_user(text: str, name: str) -> tuple[str, bool]:
     # self-closing and paired forms the depot shipped. Closing the matched
     # start tag on a paired element would orphan its </user> and leave a
     # serveradmin.xml no parser accepts.
-    elif old.endswith("/>"):
-        new = old[:-2].rstrip() + ' permission_level="0" />'
-    else:
-        new = old[:-1].rstrip() + ' permission_level="0">'
+    elif not re.search(_ATTR % "permission_level", new):
+        closer = _tag_closer(new)
+        new = new[: -len(closer)].rstrip() + f' permission_level="0"{closer}'
     # An entry this module adopts is marked as its own, including one an
     # earlier release wrote without the marker, so dropping the name from the
     # declaration later revokes it rather than leaving it at level 0 forever.
     if not _SEEDED.search(new):
         marker = f' {SEED_MARKER}="1"'
-        closer = " />" if new.endswith("/>") else ">"
+        closer = _tag_closer(new)
         new = new[: -len(closer)].rstrip() + marker + closer
     if new == old:
         return text, False
