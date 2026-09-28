@@ -696,6 +696,7 @@ check "create under a safe root is accepted"   0 env SANDBOX_HOME="$TMP" \
 # shellcheck disable=SC1090,SC1091 # extract the defaults and the reader from sb
 source /dev/stdin <<<"$(sed -n '/^SB_DEFAULT_RES=/p' "$SB")
 $(sed -n '/^SB_DEFAULT_FULLSCREEN=/p' "$SB")
+$(sed -n '/^unquote_value()/,/^}/p' "$SB")
 $(sed -n '/^env_value()/,/^}/p' "$SB")
 $(sed -n '/^declared_window()/,/^}/p' "$SB")"
 # shellcheck disable=SC2154 # the two defaults are sourced out of sb above

@@ -396,6 +396,30 @@ def test_port_block_respects_a_claim_inside_the_block(tmp: Path) -> None:
     print("PASS port_block_respects_a_claim_inside_the_block")
 
 
+def test_recorded_ports_reads_the_claim_sb_writes(tmp: Path) -> None:
+    """The claim on disk is the claim the scan has to see.
+
+    `env_line` quotes every value it writes, so an instance.env records
+    `SERVER_PORT='27100'`. The scan compared that whole token against a digit
+    string, found none and skipped it: every instance derived the same block,
+    the forward probe had no recorded block to step around, and two servers
+    were handed one port range.
+    """
+    quoted = tmp / "srv-quoted"
+    quoted.mkdir()
+    (quoted / "instance.env").write_text("SERVER_PORT='27100'\n", encoding="utf-8")
+    bare = tmp / "srv-bare"
+    bare.mkdir()
+    (bare / "instance.env").write_text("SERVER_PORT=27105\n", encoding="utf-8")
+    seen = sbconfig.recorded_ports(tmp, exclude="srv-other")
+    assert 27100 in seen, "a quoted declaration is not a claim"
+    assert 27105 in seen, "a hand-edited bare declaration is not a claim"
+    assert sbconfig.recorded_ports(tmp, exclude="srv-quoted") == {27105}, (
+        "an instance counted its own block as a claim"
+    )
+    print("PASS recorded_ports_reads_the_claim_sb_writes")
+
+
 def test_port_block_exhaustion_fails_instead_of_overlapping(tmp: Path) -> None:
     every = {
         sbconfig.PORT_BLOCK_BASE + i * sbconfig.PORT_BLOCK_SIZE
@@ -914,6 +938,7 @@ TESTS = (
     test_port_block_probes_past_a_taken_block,
     test_port_block_respects_a_claim_inside_the_block,
     test_port_block_exhaustion_fails_instead_of_overlapping,
+    test_recorded_ports_reads_the_claim_sb_writes,
     test_port_block_stays_inside_the_port_space,
     test_recorded_ports_skips_self_and_garbage,
     test_recorded_ports_ignores_a_superseded_declaration,

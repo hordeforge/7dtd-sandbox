@@ -102,6 +102,12 @@ FNV_PRIME = 0x01000193
 FNV_MASK = 0xFFFFFFFF
 USERS_CLOSER = "</users>"
 
+# The shortest thing `env_line` can write: an empty quoted value, `'`. A value
+# that short is not a quoted value, and unquoting it would yield a quote the
+# declaration never carried.
+SHELL_QUOTE = "'"
+SHELL_QUOTED_MIN = 2
+
 # First code point XML 1.0 forbids in a character, and the floor `xml_attr`
 # refuses a declaration below: everything under it is a C0 control, and
 # tab/LF/CR inside the range are attribute-value normalized to a space on
@@ -245,6 +251,30 @@ def render(
     return text
 
 
+def unquote(value: str) -> str:
+    """The value a sourcing shell would assign to a line `sb` wrote.
+
+    `env_line` quotes every value (`SERVER_PORT='27100'`), because
+    instance.env is documented as source-able and a bare value is one the
+    consumer re-splits. The reader has to take the quotes back off, exactly as
+    `env_value` in `sb` does, or the value it reads is not the one that was
+    written.
+
+    It did not, and a claimed block stopped being a claim: the scan saw
+    `'27100'`, which is not a digit string, and skipped it, so every instance
+    derived the same block and the forward probe had nothing to step around.
+    Two instances on one machine were handed the same ports.
+    """
+    stripped = value.strip()
+    if (
+        len(stripped) >= SHELL_QUOTED_MIN
+        and stripped.startswith(SHELL_QUOTE)
+        and stripped.endswith(SHELL_QUOTE)
+    ):
+        return stripped[1:-1].replace("'\\''", "'")
+    return stripped
+
+
 def fnv1a(text: str) -> int:
     """FNV-1a 32-bit over the UTF-8 bytes of `text`.
 
@@ -305,7 +335,7 @@ def recorded_ports(instances: Path, exclude: str) -> set[int]:
         for line in text.splitlines():
             key, sep, value = line.partition("=")
             if sep and key.strip() == "SERVER_PORT":
-                claimed = value.strip()
+                claimed = unquote(value)
 
         # isascii() before isdigit(): a str of Unicode decimal digits is a
         # digit string to Python but not one to int() when it holds a

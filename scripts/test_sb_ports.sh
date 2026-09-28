@@ -132,6 +132,99 @@ printf 'SERVER_PORT=not-a-number\n' > "$INST/srv-bad/instance.env"
 next="$(alloc_server_ports srv-self)" || { echo "FAIL: allocator crashed on garbage" >&2; fail=1; }
 expect_eq "garbage claim ignored" "$next" "$self"
 
+# --- allocation under concurrent creates ------------------------------------
+
+# A block is claimed by scanning the other instance.env files, taking the
+# first free slot from the one the name derives, and recording it. Two creates
+# running that sequence at once both saw the slot free and both recorded it, so
+# the invariant under test is not "the probe is deterministic" but "the claim
+# survives a race", which is only reachable through the CLI.
+#
+# Two names that derive the same slot are what makes the interleaving
+# reachable without luck: both want the one block, so an unguarded allocator
+# hands it to both. The pair is named here rather than searched for, and the
+# premise is asserted below, so a change to the hash that separates them fails
+# the case instead of quietly making it vacuous.
+RACE_HOME="$TMP/race"
+mkdir -p "$RACE_HOME/base/server-game/Mods/0_TFP_Harmony" \
+  "$RACE_HOME/base/server-game/Mods/SampleMod" "$RACE_HOME/instances"
+touch "$RACE_HOME/base/server-game/7DaysToDieServer.x86_64"
+printf '<ServerSettings>\n</ServerSettings>\n' > "$RACE_HOME/base/server-game/serverconfig.xml"
+EMPTY="$RACE_HOME/empty"
+mkdir -p "$EMPTY"
+
+RACE_A=srv-race-9
+RACE_B=srv-race-14
+slot_a="$("$SB_PY" "$SB_CONFIG" port-block "$RACE_A" --instances "$EMPTY")"
+slot_b="$("$SB_PY" "$SB_CONFIG" port-block "$RACE_B" --instances "$EMPTY")"
+expect_eq "the racing pair derives one block" "$slot_a" "$slot_b"
+
+pids=()
+for name in "$RACE_A" "$RACE_B"; do
+  env SANDBOX_HOME="$RACE_HOME" "$SB" create-server "$name" \
+    > "$TMP/race-$name.log" 2>&1 &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+
+declare -A claimed=()
+for name in "$RACE_A" "$RACE_B"; do
+  env_file="$RACE_HOME/instances/$name/instance.env"
+  if [[ ! -f "$env_file" ]]; then
+    echo "FAIL: concurrent create of $name produced no contract" >&2
+    sed 's/^/  said: /' "$TMP/race-$name.log" >&2
+    fail=1
+    continue
+  fi
+  # The quotes env_line writes are part of the value on disk, so the gate
+  # reads the declaration the way a sourcing shell would, through the reader
+  # sb uses rather than through sed.
+  port="$(env_value "$RACE_HOME/instances/$name" SERVER_PORT)"
+  if [[ -n "${claimed[$port]:-}" ]]; then
+    echo "FAIL: $name and ${claimed[$port]} were both handed port block $port" >&2
+    fail=1
+  fi
+  claimed["$port"]="$name"
+done
+# The block is a range, not a point, so the blocks are compared over the whole
+# of it: two that share a spare port still collide when the server binds.
+ports=()
+for taken in "${!claimed[@]}"; do ports+=("$taken"); done
+if ((${#ports[@]} == 2)); then
+  low="${ports[0]}"
+  high="${ports[1]}"
+  if (( low > high )); then low="${ports[1]}"; high="${ports[0]}"; fi
+  if (( high < low + PORT_BLOCK_SIZE )); then
+    echo "FAIL: port blocks $low and $high overlap" >&2
+    fail=1
+  fi
+fi
+
+# --- the instance directory is claimed atomically ---------------------------
+
+# The `-e` test followed by `mkdir -p` is a check-then-act over a directory two
+# processes write into: `mkdir -p` succeeds against a directory the other
+# create just made, so both copies ran and both trees were published under one
+# name. The refusal is the assertion: exactly one create may win.
+SAME_NAME=srv-race-same
+pids=()
+for _ in 1 2; do
+  env SANDBOX_HOME="$RACE_HOME" "$SB" create-server "$SAME_NAME" \
+    > "$TMP/race-same-$_.log" 2>&1 &
+  pids+=("$!")
+done
+won=0
+refused=0
+for pid in "${pids[@]}"; do
+  if wait "$pid"; then won=$(( won + 1 )); else refused=$(( refused + 1 )); fi
+done
+expect_eq "exactly one concurrent create of $SAME_NAME wins" "$won" 1
+expect_eq "the other is refused" "$refused" 1
+grep -q "already exists" "$TMP/race-same-1.log" "$TMP/race-same-2.log" \
+  || { echo "FAIL: the refused create did not report the existing instance" >&2; fail=1; }
+[[ -f "$RACE_HOME/instances/$SAME_NAME/game/7DaysToDieServer.x86_64" ]] \
+  || { echo "FAIL: the winning create left no base behind" >&2; fail=1; }
+
 if [[ "$fail" -ne 0 ]]; then
   echo "sb_ports: FAILED" >&2
   exit 1
