@@ -5,9 +5,58 @@ Notable changes to Safehouse. Format follows
 
 The version has one canonical home, `SB_VERSION` in `scripts/sb`, printed by
 `sb version`. The release workflow refuses a `vX.Y.Z` tag that disagrees with
-it (hordeforge/.github `REPOSITORY_STANDARDS.md` §8).
+it, or that names a version this file has no section for (hordeforge/.github
+`REPOSITORY_STANDARDS.md` §8). `scripts/test_sb_release.sh` checks the same
+contract on every push, before a tag exists to reject.
+
+**Versioning.** This is a `0.x` line, so SemVer's "anything may change before
+1.0" clause is what actually ships here, and the tag history shows the de facto
+policy rather than a written one: `0.1.0` was the first tagged release, and
+`0.2.0` shipped contract changes that break a consumer (admins declared rather
+than scanned, ports derived rather than recorded, a client window that follows
+the instance rather than the environment) as a minor bump. So a minor is not a
+safe upgrade for a harness that depends on behaviour, and a patch is.
+
+**Deprecation.** There is no deprecation schedule and no support window. The
+`sb` verbs a sibling harness calls are the public surface; a verb that goes away
+goes away in a release, and its section below is where a caller reads it.
+Nothing is deprecated ahead of removal in this repository today.
 
 ## [Unreleased]
+
+### Added
+
+- `scripts/test_sb_release.sh` gates the release contract on every push, so a
+  version that is bumped without notes is caught here rather than by the tag:
+  `SB_VERSION` must be `MAJOR.MINOR.PATCH`, must have a dated section in this
+  file, and must be the only version declaration in the tree; every release
+  heading needs its link definition, each compare link must name the previous
+  release, and `[Unreleased]` must compare against the newest tag.
+- `release.yml` refuses a tag whose `SB_VERSION` is not `MAJOR.MINOR.PATCH`,
+  whose version has no section here, or whose section is empty because the
+  notes are still under `[Unreleased]`. A tag with no notes is a release whose
+  only record is a tag name.
+
+### Fixed
+
+- 0.2.0 shipped the client-window change as an unlabelled entry under `Fixed`,
+  so the one breaking consumer change in that release (a client now follows
+  the instance's `SB_RES` / `SB_FULLSCREEN` declaration instead of an ambient
+  `SB_RES` in the calling shell) read as a bug fix. It is an `Added` entry
+  under 0.2.0 now, with the before and after and the migration written out.
+- 0.2.0 carried two `### Fixed` and two `### Added` headings. Keep a Changelog
+  groups each kind once per release, and a repeated heading splits one fix list
+  into two that read as separate.
+- The 0.2.0 compare link pointed at `/releases/tag/`, which is a page, not the
+  diff from 0.1.0.
+
+### Documentation
+
+- The changelog states the version policy this project actually follows, which
+  the tag history shows and no document did: a `0.x` minor carries breaking
+  contract changes, so a minor is not a safe upgrade for a harness pinned to
+  behaviour. There is no deprecation schedule and no support window, and the
+  `sb` verbs are the public surface.
 
 ## [0.3.0] - 2026-09-11
 
@@ -80,6 +129,36 @@ job, and the whole chain is verified running rather than building.
   Credentials are never a build input, because `docker history` prints build
   args and ENV back out; the client fetch is interactive at run time and only
   the account name crosses, through the environment.
+- **The client window is declared per instance.** `sb create <name> [--res WxH]
+  [--fullscreen 0|1]` records `SB_RES` / `SB_FULLSCREEN` in the instance's
+  `instance.env`, and every later launch reads it from there. `sb env` exports
+  the resolved `SB_SCREEN_ARGS` and every launcher passes them, so a client
+  started through 7dtd-fastconnect's `launch_client.sh` (the path 7dtd-playtest
+  uses) gets the same window as one started by `sb launch`. It did not before,
+  and inherited whatever the Proton prefix last saved; a sandbox client is a
+  test fixture that must never take the display, and several have to be visible
+  at once now that instances run in parallel.
+
+  **Breaking for callers:** a client used to follow an ambient `SB_RES` from
+  the calling shell, and now follows the instance's own declaration, so a
+  harness that set `SB_RES` in its environment has to declare it on the
+  instance (`sb create --res WxH`, or edit `instance.env` and relaunch). An
+  explicit `-screen-*` argument passed to `sb launch` still wins. A malformed
+  `SB_RES` / `SB_FULLSCREEN` is a refusal rather than a silent fallback to a
+  client with no window arguments. An instance that declared neither opens at
+  the `1280x720` default.
+- `make check` (the full static verdict) and `make clean`; `help` is the
+  default goal. `make coverage` explains why there is no coverage number here
+  rather than producing one nothing regenerates. `make up`, `make stage` and
+  `make render-config` pass through to the matching `sb` verbs.
+- `.gitattributes`, `.github/dependabot.yml`, `SECURITY.md`, `CLAUDE.md`, and
+  the standard README header and badges, so the repository satisfies
+  hordeforge/.github `REPOSITORY_STANDARDS.md` sections 1 through 5.
+- CI runs `make check test` and then exercises the installed entry point
+  (`sb version` against `SB_VERSION`, `sb help`, `sb list`), so a broken
+  dispatch fails here rather than in a sibling harness.
+- `AGENTS.md` gains a layout table, a named list of the gates that must not be
+  weakened, and a sibling-ownership table.
 
 ### Fixed
 
@@ -89,22 +168,6 @@ job, and the whole chain is verified running rather than building.
 - `sb fetch-base` / `fetch-server-base` refuse by name when steamcmd is absent
   and point at the `fetch` image, instead of failing inside a `cd` to a
   directory that was never there.
-
-- **The client window is declared per instance.** `sb create <name> [--res WxH]
-  [--fullscreen 0|1]` records `SB_RES` / `SB_FULLSCREEN` in the instance's
-  `instance.env`, and every later launch reads it from there, so the same
-  instance opens the same window on any machine and an ambient `SB_RES` in a
-  caller's shell cannot change what a recorded run looked like. `sb env`
-  exports the resolved `SB_SCREEN_ARGS` and every launcher passes them, so a
-  client started through 7dtd-fastconnect's `launch_client.sh` (the path
-  7dtd-playtest uses) gets the same window as one started by `sb launch`. It
-  did not before, and inherited whatever the Proton prefix last saved; a
-  sandbox client is a test fixture that must never take the display, and
-  several have to be visible at once now that instances run in parallel. A
-  malformed declaration is a refusal rather than a silent fallback to a client
-  with no window arguments.
-
-### Fixed
 
 - **An instance no longer inherits mods the base happened to carry.** A base
   seeded from a Steam install carries whatever that install had; this repo's
@@ -130,21 +193,6 @@ job, and the whole chain is verified running rather than building.
   steamcmd writes its own `steamapps/` (appmanifest, downloading, temp) into
   whatever `+force_install_dir` it is given, and the ancestor walk read that
   bare directory as a Steam library. A library is `steamapps/common`.
-
-### Added
-
-- `make check` (the full static verdict) and `make clean`; `help` is the
-  default goal. `make coverage` explains why there is no coverage number here
-  rather than producing one nothing regenerates. `make up`, `make stage` and
-  `make render-config` pass through to the matching `sb` verbs.
-- `.gitattributes`, `.github/dependabot.yml`, `SECURITY.md`, `CLAUDE.md`, and
-  the standard README header and badges, so the repository satisfies
-  hordeforge/.github `REPOSITORY_STANDARDS.md` sections 1 through 5.
-- CI runs `make check test` and then exercises the installed entry point
-  (`sb version` against `SB_VERSION`, `sb help`, `sb list`), so a broken
-  dispatch fails here rather than in a sibling harness.
-- `AGENTS.md` gains a layout table, a named list of the gates that must not be
-  weakened, and a sibling-ownership table.
 
 ### Changed
 
@@ -223,5 +271,5 @@ everything a test needs to exist before a suite can run.
 
 [Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.2.0
+[0.2.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/hordeforge/7dtd-sandbox/releases/tag/v0.1.0

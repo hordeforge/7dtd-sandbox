@@ -26,6 +26,14 @@ make test              # every gate; no game, no Proton, no steamcmd needed
 No coverage badge: `sb` is bash and would need kcov, which CI does not run.
 `make coverage` says so rather than producing a number nothing regenerates.
 
+## Releases
+
+`SB_VERSION` in `scripts/sb` is the one version home, and a `vX.Y.Z` tag is
+refused unless it matches it and the changelog has a dated section for it.
+This is a `0.x` line, so a minor may carry breaking changes to the instance
+contract: pin the version a harness depends on, and read
+[CHANGELOG.md](CHANGELOG.md) before upgrading past one.
+
 ## Three launch modes
 
 ```bash

@@ -77,6 +77,7 @@ request. No game, no Proton, no steamcmd.
 | `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout |
 | `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir |
+| `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
 
 ## Sibling projects
 
@@ -329,8 +330,12 @@ client hangs during early Unity init (see README); use the native
     names tears the pair down.
 11. **One version home: `SB_VERSION` in `scripts/sb`**, printed by
     `sb version`. Bump it, land that on main, then push the matching `vX.Y.Z`
-    tag; the release workflow refuses a tag that disagrees. Every release gets
-    a CHANGELOG entry.
+    tag. The release workflow refuses a tag that disagrees, a version that is
+    not `MAJOR.MINOR.PATCH`, and a version with no dated `CHANGELOG.md`
+    section, or one still empty because the notes sit under `[Unreleased]`.
+    Every release gets a CHANGELOG entry, written as part of the same commit
+    as the bump. `scripts/test_sb_release.sh` holds the same structural rules
+    on every push.
 12. **CI runs the same two targets you do.** `.github/workflows/ci.yml` is
     `make lint` then `make test`, nothing inlined, so a gate added here runs
     on every push without touching the workflow. Every gate works against a
