@@ -76,9 +76,9 @@ request. No game, no Proton, no steamcmd.
 | `scripts/test_sbconfig.py` | Property values are XML-escaped (a quote cannot inject properties); commented template lines stay commented; a re-render is byte-identical; ports are name-derived and probe deterministically; admins come only from the declaration |
 | `scripts/test_sb_serverconfig.sh` | The config is rebuilt from the base template, so undeclaring a property returns it to the stock value; instance-owned keys are refused |
 | `scripts/test_sb_ports.sh` | Creation order never shifts an instance's block; an instance does not block itself |
-| `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file |
+| `scripts/test_sb_serveradmin.sh` | An unrelated instance on the machine cannot change a server's admin file; the file stays 0600 on creation and after a rewrite |
 | `scripts/test_sb_up.py` | `sb up` returns and leaves the server orphaned, not parented to `sb`; a running instance is refused; a server that never binds fails inside its timeout |
-| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir |
+| `scripts/test_sb_cli.sh` | Exit-code surface; the Steam-library guard refuses a real library and accepts a steamcmd manifest dir; `sb env` output is data, not shell, when the caller evals it; an admin name or a serverconfig property that is not a plain identifier is refused |
 | `scripts/test_sb_release.sh` | The shipped version is a `MAJOR.MINOR.PATCH` with a dated changelog section and the only version declaration in the tree; every release heading has its compare link |
 
 ## Sibling projects
@@ -171,7 +171,8 @@ Three properties follow, and each is gated:
    enumerate whatever client instances existed on the machine, so the same
    instance produced different servers on different hosts. Add names with
    `sb create-server <name> --admin NAME`, or edit `SERVER_ADMINS` and
-   relaunch.
+   relaunch. A name outside `[A-Za-z0-9._-]` is refused (exit 2): the name
+   reaches `instance.env`, which `sb env` hands to a caller that evaluates it.
 
 `sb wipe` clears `instance.props` with the rest of the state: a wiped instance
 is the base template again, not the last suite's world.
@@ -196,6 +197,11 @@ double-bind one instance. Teardown is by instance: `sb stop` matches processes
 by that instance's own `SB_INSTANCE` (server) or `STEAM_COMPAT_DATA_PATH`
 (client). A caller that pkills `7DaysToDieServer.x86_64` by pattern kills every
 other instance on the machine; that is why `7dtd-playtest` dropped the pattern.
+
+`sb render-config` refuses a property name outside `[A-Za-z][A-Za-z0-9_]*` and
+a value carrying a newline (exit 2). The name is a regex in the upsert that
+rewrites an existing property and a line prefix in `instance.props`; the value
+is one line of that file.
 
 ## The contract (sibling harnesses)
 

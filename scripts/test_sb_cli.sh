@@ -141,6 +141,28 @@ status_out="$(env SANDBOX_HOME="$TMP" "$SB" status srv-t)"
 grep -q "srv-t (server)" <<<"$status_out" || { echo "FAIL: status not server-kind" >&2; fail=1; }
 check "launch on server dies"   1 env SANDBOX_HOME="$TMP" "$SB" launch srv-t
 
+# The documented consumer of `sb env` is `eval "$(sb env <name>)"`, so what it
+# prints must be data, never shell. A declared value carrying a quote would
+# otherwise close the assignment and run the rest of the line.
+mkdir -p "$TMP/instances/srv-evil"
+EVIL_ADMINS="a'; touch $TMP/PWNED; #"
+cat > "$TMP/instances/srv-evil/instance.env" <<EOF
+SANDBOX_NAME=srv-evil
+SERVER_KIND=server
+SERVER_ADMINS=$EVIL_ADMINS
+EOF
+evil_env="$(env SANDBOX_HOME="$TMP" "$SB" env srv-evil)"
+eval "$evil_env"
+[[ -e "$TMP/PWNED" ]] && { echo "FAIL: sb env emitted a value the caller's shell executes" >&2; fail=1; }
+expect_eq "quoted value round-trips through eval" "${SERVER_ADMINS:-}" "$EVIL_ADMINS"
+
+# A Local admin name lands in instance.env and in serveradmin.xml; one shaped
+# like a shell fragment is refused at the boundary.
+touch "$TMP/base/server-game/7DaysToDieServer.x86_64"
+check "admin name with quote refused"  2 env SANDBOX_HOME="$TMP" "$SB" create-server srv-bad --admin "a'; touch $TMP/PWNED; #"
+check "admin name with slash refused"  2 env SANDBOX_HOME="$TMP" "$SB" create-server srv-bad --admin "a/b"
+[[ -d "$TMP/instances/srv-bad" ]] && { echo "FAIL: a refused admin name still created the instance" >&2; fail=1; }
+
 # --- an instance's mods are stock plus what was declared --------------------
 
 # A base seeded from a Steam install carries whatever that install had. This
@@ -276,6 +298,11 @@ mkdir -p "$TMP/instances/srv-t/game"
 printf '<ServerSettings>\n</ServerSettings>\n' > "$TMP/instances/srv-t/game/serverconfig.xml"
 check "render-config no props"  2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t
 check "render-config bad prop"  2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t NoEquals
+# A key is a regex in the upsert and a line prefix in instance.props; a value
+# is one line of that file. Anything else is a refusal, not a rewrite.
+check "render-config regex key refused"  2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t '.*=x'
+check "render-config key with space"     2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t 'Max Spawn=1'
+check "render-config newline value"      2 env SANDBOX_HOME="$TMP" "$SB" render-config srv-t $'ServerName=a\nGameWorld=Navezgane'
 
 mkdir -p "$TMP/modsrc/DemoMod"
 touch "$TMP/modsrc/DemoMod/ModInfo.xml"

@@ -59,6 +59,10 @@ expect_grep "other-client Local admin" \
 expect_grep "default Player Local admin" \
   'platform="Local" userid="Player"[^>]*permission_level="0"' "$admin"
 
+# The file that hands permission_level=0 to a player name is user-only, on
+# creation and after every rewrite, rather than whatever the umask said.
+expect_eq "serveradmin.xml is 0600" "$(stat -c '%a' "$admin")" "600"
+
 # An unrelated instance on the machine must not leak into this server's file.
 mkdir -p "$INSTANCES_DIR/client-unrelated"
 echo 'SANDBOX_NAME=client-unrelated' > "$INSTANCES_DIR/client-unrelated/instance.env"
@@ -94,6 +98,7 @@ PY
 seed_sandbox_admins "$INST"
 expect_grep "client-sg restored to 0" \
   'platform="Local" userid="client-sg"[^>]*permission_level="0"' "$admin"
+expect_eq "serveradmin.xml still 0600 after a rewrite" "$(stat -c '%a' "$admin")" "600"
 if grep -qE 'userid="client-sg"[^>]*permission_level="1000"' "$admin"; then
   echo "FAIL: client-sg still at permission_level=1000 after reseed" >&2
   fail=1

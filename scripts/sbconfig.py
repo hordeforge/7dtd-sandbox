@@ -173,10 +173,7 @@ def render(
         raise RuntimeError(f"cannot write generated serverconfig {dst}: {ex}") from ex
     # The rendered config can carry TelnetPassword; keep it user-only rather
     # than inheriting a world-readable umask.
-    try:
-        os.chmod(dst, 0o600)
-    except OSError as ex:
-        print(f"WARN: could not restrict {dst} to 0600: {ex}", file=sys.stderr)
+    _restrict(dst)
     return text
 
 
@@ -264,6 +261,7 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     out.parent.mkdir(parents=True, exist_ok=True)
     if not out.is_file():
         out.write_text(ADMIN_TEMPLATE.format(users=users_block), encoding="utf-8")
+        _restrict(out)
         return True
 
     text = out.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
@@ -282,10 +280,22 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     return changed
 
 
+def _restrict(path: Path) -> None:
+    """Keep an admin/secret-bearing file user-only rather than the umask's."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError as ex:
+        print(f"WARN: could not restrict {path} to 0600: {ex}", file=sys.stderr)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Publish via temp+replace so a failed write leaves the old file intact."""
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     tmp.write_text(text, encoding="utf-8")
+    # The temp carries the same content as the file it replaces, so it gets
+    # the same mode: replacing a 0600 file with a umask-default one would widen
+    # it to every local user.
+    _restrict(tmp)
     os.replace(tmp, path)
 
 

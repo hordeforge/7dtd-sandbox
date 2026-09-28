@@ -60,6 +60,16 @@ Nothing is deprecated ahead of removal in this repository today.
   before it is written to `instance.env`. That file is documented as
   source-able and `sb env` prints it for `eval`, so a name carrying shell
   metacharacters became code in the next harness's shell.
+- `sb env` emits its contract as quoted shell assignments instead of echoing
+  `instance.env` raw. Its documented consumer is `eval "$(sb env <name>)"`, so
+  a declared value carrying a quote (an admin name, a path) closed the string
+  and ran the rest of the line in the caller's shell.
+- `sb render-config` refuses a property name outside `[A-Za-z][A-Za-z0-9_]*`
+  and a value carrying a newline. The name is a regex in the upsert that
+  rewrites an existing property and a line prefix in `instance.props`.
+- `serveradmin.xml` is written `0600` on creation and after every rewrite, like
+  the rendered serverconfig. A temp-and-replace that left the file at the
+  umask's mode widened a permission_level=0 list to every local user.
 - `SECURITY.md` no longer claims nothing goes through argv. `sb fetch-base`
   passes `STEAMCMD_PASS` to steamcmd as a `+login` argument, which is world
   readable in the process table for the duration of a fetch.

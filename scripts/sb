@@ -55,13 +55,14 @@ Underlying commands (full control):
                        prefix + its declared window; default windowed 1280x720)
   create-server <name> [--admin NAME...]
                        fresh isolated server instance (game copy + name-derived
-                       port block + declared Local admins)
+                       port block + declared Local admins; NAME is [A-Za-z0-9._-])
   up <name> [--timeout N]       start the server detached, block until its
                        game port listens, then print the contract (stop: sb stop)
   stage <name> <mod-dir>...     copy built modlets into the instance's Mods
   render-config <name> KEY=VALUE...
                        declare serverconfig properties; the config is rebuilt
                        from the base template plus every declaration
+                       (KEY is [A-Za-z][A-Za-z0-9_]*, VALUE is one line)
   launch <name> [-- args...]    run client under Proton, no Steam
   launch-server <name>          run dedicated server, blocking
   wipe <name> [name...] reset game/Mods/saves to pristine
@@ -115,6 +116,21 @@ validate_name() {
 # lines that surround it.
 instance_env_value() {
   sed -n "s/^$2=//p" "$1/instance.env" 2>/dev/null | head -1
+}
+
+# A serverconfig property name. It is a regex in the upsert that rewrites an
+# existing property and a line prefix in instance.props, so it stays to the
+# characters the stock config uses.
+validate_prop_key() {
+  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || usage_err "invalid property name '$1' (use [A-Za-z][A-Za-z0-9_]*)"
+}
+
+# One value as a single shell word, for the consumer that evaluates `sb env`.
+# A quote in a path or a declared value stays inside the string instead of
+# closing it and running whatever followed.
+shquote() {
+  local s="${1//\'/\'\\\'\'}"
+  printf "'%s'" "$s"
 }
 
 # Steam only ever validates files it owns (inside a steamapps library). The
@@ -778,8 +794,18 @@ cmd_env() {
   local name="$1" inst kind
   inst="$(instance_dir "$name")"
   kind="$(instance_kind "$inst")"
+  # Every value below is emitted as a quoted shell assignment, never echoed
+  # raw: the documented consumer is `eval "$(sb env <name>)"`, so a line
+  # carrying a quote or a command substitution would run in the caller's shell.
   if [[ "$kind" == server ]]; then
-    grep -v '^#' "$inst/instance.env" | grep -v '^$' || true
+    local key value line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      [[ "$line" == *=* ]] || continue
+      key="${line%%=*}"; value="${line#*=}"
+      [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      printf 'export %s=%s\n' "$key" "$(shquote "$value")"
+    done < "$inst/instance.env"
     return 0
   fi
   PROTON="$(detect_proton)"
@@ -790,19 +816,17 @@ cmd_env() {
   read -r res fullscreen < <(declared_window "$inst")
   validate_window "$res" "$fullscreen"
   win_args="$(screen_args "$res" "$fullscreen")"
-  cat <<EOF
-export SANDBOX_NAME='$name'
-export INSTANCE_DIR='$inst'
-export GAME='$inst/game'
-export COMPAT='$inst/compatdata'
-export PROTON='$PROTON'
-export STEAM_ROOT='$STEAM_ROOT'
-export STEAM_APPID='$STEAM_APPID'
-export LOGFILE='$inst/logs/output_log_client.txt'
-export SB_RES='$res'
-export SB_FULLSCREEN='$fullscreen'
-export SB_SCREEN_ARGS='$win_args'
-EOF
+  printf 'export SANDBOX_NAME=%s\n' "$(shquote "$name")"
+  printf 'export INSTANCE_DIR=%s\n' "$(shquote "$inst")"
+  printf 'export GAME=%s\n' "$(shquote "$inst/game")"
+  printf 'export COMPAT=%s\n' "$(shquote "$inst/compatdata")"
+  printf 'export PROTON=%s\n' "$(shquote "$PROTON")"
+  printf 'export STEAM_ROOT=%s\n' "$(shquote "$STEAM_ROOT")"
+  printf 'export STEAM_APPID=%s\n' "$(shquote "$STEAM_APPID")"
+  printf 'export LOGFILE=%s\n' "$(shquote "$inst/logs/output_log_client.txt")"
+  printf 'export SB_RES=%s\n' "$(shquote "$res")"
+  printf 'export SB_FULLSCREEN=%s\n' "$(shquote "$fullscreen")"
+  printf 'export SB_SCREEN_ARGS=%s\n' "$(shquote "$win_args")"
 }
 
 cmd_launch() {
@@ -1109,6 +1133,10 @@ cmd_render_config() {
   inst="$(instance_dir "$name")"
   for kv in "$@"; do
     [[ "$kv" == *=* ]] || usage_err "bad property '$kv' (want KEY=VALUE)"
+    validate_prop_key "${kv%%=*}"
+    # instance.props is line-based: a value carrying a newline would be
+    # recorded as a second, undeclared property on the next read.
+    [[ "$kv" != *$'\n'* ]] || usage_err "property '$kv' must be a single line"
   done
   record_server_props "$inst" "$@"
   local port telnet_port
