@@ -36,6 +36,9 @@ Nothing is deprecated ahead of removal in this repository today.
   whose version has no section here, or whose section is empty because the
   notes are still under `[Unreleased]`. A tag with no notes is a release whose
   only record is a tag name.
+- `docs/THREAT_MODEL.md`: entry points, trust boundaries, assets, threats per
+  boundary, existing controls, and the mitigation claims the code does not
+  implement, each with a file reference.
 
 ### Fixed
 
@@ -53,6 +56,13 @@ Nothing is deprecated ahead of removal in this repository today.
   declaration. The check ran inside a command substitution, so the refusal
   exited the subshell and the game started with no `-screen-*` arguments at
   all, the silent fallback the window contract forbids.
+- A Local admin name given to `sb create-server --admin` is charset-validated
+  before it is written to `instance.env`. That file is documented as
+  source-able and `sb env` prints it for `eval`, so a name carrying shell
+  metacharacters became code in the next harness's shell.
+- `SECURITY.md` no longer claims nothing goes through argv. `sb fetch-base`
+  passes `STEAMCMD_PASS` to steamcmd as a `+login` argument, which is world
+  readable in the process table for the duration of a fetch.
 
 ### Documentation
 

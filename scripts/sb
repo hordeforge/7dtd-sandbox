@@ -393,6 +393,15 @@ default_server_admins() {
   esac
 }
 
+# A Local admin name reaches two destinations: serveradmin.xml (escaped) and
+# instance.env (shell). instance.env is documented as source-able and `sb env`
+# prints it for eval, so a name carrying shell metacharacters would be executed
+# by the next harness. Charset-identical to an instance name, no exceptions.
+validate_admin_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    || usage_err "invalid admin name '$1' (use [A-Za-z0-9._-], not starting with '-')"
+}
+
 cmd_create_server() {
   # Shifted, so "$@" below is the --admin extras and not the instance name
   # itself: without this the server declared its own name as a Local admin.
@@ -407,6 +416,7 @@ cmd_create_server() {
   port="$(alloc_server_ports "$name")"
   admins="$(default_server_admins "$name")"
   for extra in "$@"; do
+    validate_admin_name "$extra"
     admins="${admins:+$admins,}$extra"
   done
   mkdir -p "$inst"

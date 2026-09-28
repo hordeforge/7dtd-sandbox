@@ -17,7 +17,9 @@ expect_eq() { # expect_eq <desc> <got> <want>
 check() { # check <desc> <expected-rc> <cmd...>
   local desc="$1" want="$2"; shift 2
   local rc=0
-  "$@" >/dev/null 2>&1 || rc=$?
+  # Subshell: a sourced sb helper calls `exit` on refusal, which would take
+  # this script down instead of reporting the exit code under test.
+  ( "$@" ) >/dev/null 2>&1 || rc=$?
   if [[ "$rc" != "$want" ]]; then
     echo "FAIL: $desc (rc=$rc want=$want)" >&2
     fail=1
@@ -180,6 +182,36 @@ quiet_out="$(prune_instance_mods "$TMP/instances/pruneme")"
 source /dev/stdin <<<"$(sed -n '/^default_server_admins()/,/^}/p' "$SB")"
 expect_eq "pair name only" "$(default_server_admins srv-demo)" "client-demo"
 expect_eq "no pair for a bare name" "$(default_server_admins standalone)" ""
+
+# --- a Local admin name is shell code once it is in instance.env -----------
+
+# instance.env is source-able and `sb env` prints it for eval, so a --admin
+# value carrying shell metacharacters would run in the next harness's shell.
+# The helper calls sb's usage_err, so stub the two exits it uses.
+die() { echo "test: $*" >&2; exit 1; }
+usage_err() { echo "test: $*" >&2; exit 2; }
+# shellcheck disable=SC1090,SC1091 # extract the helper from sb without running main
+source /dev/stdin <<<"$(sed -n '/^validate_admin_name()/,/^}/p' "$SB")"
+for good in client-demo "srv_1" "a.b-c"; do
+  check "admin name '$good' accepted" 0 validate_admin_name "$good"
+done
+# shellcheck disable=SC2016 # the single quotes are the payload, not an oversight
+for bad in 'x;rm -rf /' '$(id)' 'a b' '../x' '-x' '' 'a"b'; do
+  check "admin name '$bad' refused" 2 validate_admin_name "$bad"
+done
+
+# End to end: the refusal happens at the CLI, before anything is written, and a
+# well-formed name still reaches the declaration.
+mkdir -p "$TMP/base/server-game"
+touch "$TMP/base/server-game/7DaysToDieServer.x86_64"
+check "create-server refuses a metacharacter admin" 2 \
+  env SANDBOX_HOME="$TMP" "$SB" create-server srv-bad --admin 'x;id'
+[[ -e "$TMP/instances/srv-bad" ]] \
+  && { echo "FAIL: a refused --admin still created the instance" >&2; fail=1; }
+check "create-server accepts a plain admin" 0 \
+  env SANDBOX_HOME="$TMP" "$SB" create-server srvplain --admin 'client-ok'
+grep -qx 'SERVER_ADMINS=client-ok' "$TMP/instances/srvplain/instance.env" \
+  || { echo "FAIL: a valid --admin did not reach SERVER_ADMINS" >&2; fail=1; }
 
 # --- the window contract every launcher must honour -------------------------
 

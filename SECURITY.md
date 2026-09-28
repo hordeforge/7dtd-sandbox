@@ -12,6 +12,9 @@ Open a private security advisory on
 Do not open a public issue for anything that discloses a credential or a path
 to one.
 
+The threat model for this repository's own code, the images and the instances
+they manage is [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+
 ## Credentials
 
 - **Credentials are never a build input.** No `ARG`, no `ENV`, no secret file
@@ -37,9 +40,18 @@ to one.
   `STEAMCMD_PASS` from the environment and passes them to steamcmd. They never
   appear in a committed file. With `STEAMCMD_PASS` unset, steamcmd prompts on
   the terminal, which is the safer default for an interactive fetch.
-- **Nothing goes through argv.** The process table is world-readable on a
-  normal Linux host, so a password on a command line is a password every local
-  user can read. `sb` passes secrets as environment or file content only.
+- **Almost nothing goes through argv.** The process table is world-readable on
+  a normal Linux host, so a password on a command line is a password every
+  local user can read. One exception, stated here rather than left for a
+  reader to discover: `sb fetch-base` passes `STEAMCMD_PASS` to
+  `steamcmd.sh` as a `+login` argument (`scripts/sb`), because that is how
+  steamcmd takes a password. The window is one fetch long, and the prompt is
+  the safer path. Everything else is environment or file content.
+- **A Local admin name is not shell code.** `SERVER_ADMINS` is written into
+  `instance.env`, which callers `source` and which `sb env` prints for `eval`.
+  Admin names are charset-validated before they are written, so a name cannot
+  carry metacharacters into the caller's shell. Gated
+  (`scripts/test_sb_cli.sh`).
 - **The generated serverconfig is `0600`.** It can carry `TelnetPassword`
   (a harness renders one per run), so `sbconfig.py render` restricts the file
   it writes rather than inheriting the caller's umask.

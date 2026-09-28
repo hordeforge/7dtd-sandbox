@@ -61,7 +61,9 @@ repo opens a serverconfig, allocates a port, or execs a dedicated server.
 Docs: [`README.md`](README.md) (what it is and how to drive it),
 [`CHANGELOG.md`](CHANGELOG.md) (what each release shipped),
 [`SECURITY.md`](SECURITY.md) (credentials, boundaries, what is deliberately
-lab-weak), this file (rules and contracts).
+lab-weak), [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) (entry points,
+trust boundaries, threats per boundary, and the mitigation claims the code does
+not implement, each with a file reference), this file (rules and contracts).
 
 ## Gates that must not be weakened
 
