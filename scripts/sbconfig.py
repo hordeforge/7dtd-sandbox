@@ -225,7 +225,8 @@ def render(
 ) -> str:
     """Render `src` into `dst` with the given property values. Returns the text."""
     try:
-        text = src.read_text(encoding="utf-8", newline="")
+        with src.open(encoding="utf-8", newline="") as stream:
+            text = stream.read()
     except (OSError, UnicodeDecodeError) as ex:
         # A user-edited template can be non-UTF-8 or unreadable. Name the file
         # and the reason instead of a bare traceback: this runs after the
@@ -602,7 +603,8 @@ def seed_admins(out: Path, names: list[str]) -> bool:
     try:
         # newline="": text mode would translate a declared CR into CRLF, so a
         # rewrite would change the bytes it was supposed to leave alone.
-        text = out.read_text(encoding="utf-8", newline="")
+        with out.open(encoding="utf-8", newline="") as stream:
+            text = stream.read()
     except UnicodeDecodeError as ex:
         raise RuntimeError(
             f"{out} is not valid UTF-8 ({ex}); refusing to rewrite it, because "
@@ -766,7 +768,8 @@ def cmd_get(args: argparse.Namespace) -> int:
     # read back by a caller deciding what the game will see, and a replacement
     # character in it is indistinguishable from a character the config holds.
     try:
-        text = args.config.read_text(encoding="utf-8", newline="")
+        with args.config.open(encoding="utf-8", newline="") as stream:
+            text = stream.read()
     except UnicodeDecodeError as ex:
         print(f"ERROR: {args.config} is not valid UTF-8: {ex}", file=sys.stderr)
         return 1

@@ -42,6 +42,8 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ### Fixed
 
+- Configuration reads preserve original line endings on supported Python 3.12, using `Path.open` rather than the newer `Path.read_text(newline=...)` option.
+
 - Concurrent `sb` invocations against one instance are serialized. The
   `/proc` scan before `up` and `stop`, the `instance.props` upsert behind
   `render-config`, and the tree replacement in `wipe` and `stage` were
