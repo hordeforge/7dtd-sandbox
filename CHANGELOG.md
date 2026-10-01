@@ -32,6 +32,8 @@ Nothing is deprecated ahead of removal in this repository today.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
 ### Added
 
 - `sb wipe` and `sb destroy` take `--dry-run`, which reports what the run
@@ -874,7 +876,8 @@ everything a test needs to exist before a suite can run.
 - Instances created before this release keep the ports recorded in their
   `instance.env`; only new instances get a name-derived block.
 
-[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hordeforge/7dtd-sandbox/compare/v0.1.0...v0.2.0
